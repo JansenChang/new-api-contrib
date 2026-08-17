@@ -49,7 +49,7 @@
 - 未修改 UAT 或生产配置。UAT PostgreSQL 的 `EnterpriseBillingEnabled` Option 未设置，应用使用默认 `false`；本轮没有尝试开启发布门。
 - 仅查询 PostgreSQL 元数据，确认存在企业表 `enterprises`、`enterprise_memberships`、`enterprise_invitations`、`enterprise_ledgers`、`enterprise_usage_records`、`api_key_deliveries`；`users.active_enterprise_id` 和两个订单表的企业计费主体快照列均存在。
 - 企业账本/使用记录的目标唯一索引检查返回 2；保留的 UAT Root 关联到恰好一条 ACTIVE Owner 企业关系和一条 ACTIVE Owner 成员关系。查询未导出用户、Key、会话、渠道或支付数据。
-- 在本地隔离测试进程，发布门关闭回归 `TestEnterpriseUsageReserveRejectsWhenJointReleaseGateIsClosed` 与 `TestPersonalAssetsFrozenUsesReleaseGateAndMembershipState` 通过。
+- 在本地隔离测试进程，发布门关闭回归 `TestEnterpriseUsageReserveRejectsWhenJointReleaseGateIsClosed`、`TestPersonalAssetsFrozenUsesReleaseGateAndMembershipState` 与 `TestEnterpriseAssetFreezeCoversEveryPersonalAssetWriteRoute` 通过。
 
 该结果只证明关闭状态、schema 和 Root 自动关系没有意外启用企业资助链路；它**不是**企业功能 E2E，也不能作为开启 `EnterpriseBillingEnabled` 的依据。邀请、Owner 指派、划转/回收、白名单、企业调用、结算/退款、订阅冻结、Key 投递、支付与上游均仍为 `NOT_RUN`。
 
