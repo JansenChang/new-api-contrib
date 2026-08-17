@@ -1,6 +1,6 @@
 # 企业 Key 与个人资产冻结 E：执行计划
 
-状态：IMPLEMENTED_PENDING_VERIFICATION（未提交、未合并）
+状态：INTEGRATED_PENDING_UAT（已整合；发布门关闭）
 负责人：Codex
 更新时间：2026-08-17
 
@@ -42,6 +42,8 @@
 - `gofmt`、`git diff --check` 通过；未执行环境不冒充已验证。
 
 ## 结果与未解决项
+
+- 2026-08-17：本切片以 `a73d550f3` 提交并受控整合。`EnterpriseBillingEnabled` 仍为 Root-only、默认 `false`；未推送、未部署。
 
 - 已实现 Root/Admin 的邮件 Key 选择：每把现有 Key 各有一条服务端 `AuthFlow.Payload` 绑定目标的短时确认链接；确认请求只提交 `email` 与不透明 Flow Token，后端不接受可改目标的 `token_id`。
 - 已实现 Root/Admin 每一把 Key 的行内轮换入口：仅在单主 Key 模式下展示，必须完成 2FA/Passkey 安全验证；新 Key 只驻留在组件内存的一次性对话框，确认保存后清除认证并跳转登录。

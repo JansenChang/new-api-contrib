@@ -1,6 +1,6 @@
 # 企业 Relay 账务 D：执行计划
 
-状态：READY_FOR_CONTROLLED_INTEGRATION（发布门默认关闭；运行验证与 UAT 尚未执行）
+状态：INTEGRATED_PENDING_UAT（发布门默认关闭；运行验证与 UAT 尚未执行）
 
 ## 目标与非目标
 
@@ -29,3 +29,7 @@ Owner 异常暂停范围仍须在成员关系切片中落地；Realtime/Midjourn
 - Go 测试：本机定向构建无可观察完成结果，记为 `NOT_RUN`；不能据此宣称通过。
 - SQLite/MySQL/PostgreSQL 运行验证：NOT_RUN（仅完成源码接线）。
 - SSH/UAT/生产：158 仅完成基线 UAT 的只读隔离复核；D 未部署，生产未触碰。
+
+## 整合记录
+
+- 2026-08-17：本切片以 `e7fadcff8` 提交，并由 `63df9d6d7` 受控整合。D/E 的共同发布门定义已收敛为一处并保持 `false`；未推送、未部署。

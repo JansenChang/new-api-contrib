@@ -1,6 +1,6 @@
 # 切片 B：企业成员与邀请
 
-状态：`IMPLEMENTED_FOR_ISOLATED_DOMAIN_REVIEW`（未提交、未整合、未发布）
+状态：`INTEGRATED_PENDING_UAT`（已整合；发布门关闭；未发布）
 
 负责人：Codex
 
@@ -25,6 +25,10 @@
 ## 发布门
 
 公共企业关系入口数量保持为 0。`EnterpriseBillingEnabled` 是 Root-only、默认 false 的共同发布门；只有 C1、C2、D、E、B 和隔离 UAT 完整通过后，未来 Router/编排层才可检查并开放功能。本片的模型函数没有当前调用者，不能构成绕过门禁的公开能力。
+
+## 整合记录
+
+- 2026-08-17：本切片以 `1e567160e` 提交，并由 `6633b1e67` 受控整合。未推送、未部署，`EnterpriseBillingEnabled` 保持 `false`。
 
 ## 验证
 
