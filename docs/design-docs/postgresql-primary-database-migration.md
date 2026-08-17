@@ -13,7 +13,7 @@
 
 已有隔离 UAT 只证明：一个清洗后的 SQLite 一致性副本曾导入独立 PostgreSQL、候选应用可在内部网络返回 HTTP 200，且生产容器/卷/网络未被改动。它不证明生产切换、主机端口、完整企业 E2E、MySQL 导入、真实支付/邮件/OAuth/上游调用或回滚。此前的合成清单工具仅校验人工提供的合成 JSON，不能替代真实导入、脱敏或隔离证据。
 
-基线候选曾有 PostgreSQL 的硬门禁：企业账本 `command_summary` 的新写入使用 NUL（`\x00`）拼接，而 PostgreSQL `text/varchar` 不能持久化 NUL。独立 P-M1 修复提交 `df33b9ec9` 已改为无 NUL 的确定性摘要，并在专用隔离 PostgreSQL 库实测通过；该提交尚未整合到最终迁移候选。`enterpriseReferenceHash` 的 NUL 只用于哈希输入、`usedata` 的 NUL 只用于进程内缓存；它们不是同一问题。历史 SQLite/MySQL NUL 账本的专用转换与候选整合后实测仍是带企业表迁入 PostgreSQL 的前置门禁。
+基线候选曾有 PostgreSQL 的硬门禁：企业账本 `command_summary` 的新写入使用 NUL（`\x00`）拼接，而 PostgreSQL `text/varchar` 不能持久化 NUL。P-M1 修复已改为无 NUL 的确定性摘要，并作为候选 `codex/enterprise-f3b-pgcompat` 的提交 `b96f0650b` 被受控整合；专用隔离 PostgreSQL 合同已记录通过。`enterpriseReferenceHash` 的 NUL 只用于哈希输入、`usedata` 的 NUL 只用于进程内缓存；它们不是同一问题。历史 SQLite/MySQL NUL 账本的专用转换与生产数据实测仍是带企业表迁入 PostgreSQL 的前置门禁。
 
 ## 目标与设计决策
 
@@ -104,7 +104,7 @@ N/A — 本设计不新增 HTTP、Relay、支付或管理 API。后续一次性�
 ## 实施分片与顺序
 
 1. **P-M0：事实盘点与安全预检设计。** 读取生产环境的数据库类型/版本、表和日志库范围、写入者、备份方式、规模、磁盘、网络、Redis 所有权与外部回调路径；仅只读，缺失即暂停。
-2. **P-M1：PostgreSQL 兼容清零。** 整合账本 NUL 修复（当前独立提交 `df33b9ec9`），扫描其他持久化字符串/JSON 与跨方言 SQL；在受控 `new_api_enterprise_test` 上运行 PostgreSQL 模型合同。该分片不复制生产数据。
+2. **P-M1：PostgreSQL 兼容清零。** 账本 NUL 修复已整合到候选 `b96f0650b` 并在受控 `new_api_enterprise_test` 上记录模型合同通过；仍需扫描其他持久化字符串/JSON、设计历史 NUL 行的转换或失败关闭规则，并保留跨方言 SQL 审计。该分片不复制生产数据。
 3. **P-M2：一次性复制器与验证器。** 在独立分支实现经批准的 schema 建立、明确表映射、源只读/目标写入、数据扫描、批量加载、序列重置和验证报告；先以合成 SQLite 与 MySQL fixture 测试。
 4. **P-M3：脱敏 UAT 演练。** 在 158 的已确认独立资源上，从一致性生产快照或同量级合成数据恢复，执行扫描/清洗/出站隔离、候选启动和业务合同；删除导入载体并保留非敏感证据。
 5. **P-M4：生产切换 Runbook。** 基于测得时长、已批准备份恢复、写入冻结和恢复演练，单独提交具体窗口、责任人、目标数据库、DNS/代理与 DSN 切换步骤。该文档不是 P-M4 的授权。
@@ -125,7 +125,7 @@ N/A — 本设计不新增 HTTP、Relay、支付或管理 API。后续一次性�
 | 驱动与 schema | `model/main.go` 已使用 GORM PostgreSQL 驱动，`migrateDB()`/`migrateEnterpriseFoundation()` 管理 schema | 支持新 PostgreSQL schema，不等于历史数据复制 |
 | 迁移工具 | 仓库没有 SQLite/MySQL→PostgreSQL 数据复制器；已有 `tools/postgres-uat-preflight` 只读合成 manifest | P-M2 尚未实现 |
 | UAT | `2026-08-17-postgres-uat-run-result.md` 记录过隔离导入、行数/序列检查和内部 HTTP 200 | 仅为基线 UAT 证据；不能外推到生产或企业 E2E |
-| 持久化 NUL | P-M1 独立提交 `df33b9ec9` 已消除新企业账本/用量摘要 NUL，并在 `new_api_enterprise_test` 合同验证通过 | 必须整合到迁移候选；历史 NUL 行仍需专用转换/阻断 |
+| 持久化 NUL | P-M1 已在候选 `b96f0650b` 消除新企业账本/用量摘要 NUL，并记录 `new_api_enterprise_test` 合同验证通过 | 历史 NUL 行仍需专用转换/阻断 |
 | 并发语义 | `lockForUpdate` 对 PostgreSQL/MySQL 使用 `FOR UPDATE`，SQLite 跳过；已有可选 PostgreSQL 企业合同测试分支 | 仍需在受控 PostgreSQL 和候选整合 SHA 上实测 |
 | 生产拓扑 | 生产库类型、版本、日志库、实例数、写入者、备份、容量、网络、Redis keyspace、回调入口 | UNKNOWN；未确认前不得编写具体生产命令 |
 
