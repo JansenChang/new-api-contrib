@@ -42,7 +42,7 @@ func (setMiniRedisTimeOnEvalHook) AfterProcessPipeline(context.Context, []redis.
 
 func setupUserSessionTest(t *testing.T) {
 	t.Helper()
-	require.NoError(t, DB.AutoMigrate(&User{}, &UserSession{}))
+	require.NoError(t, DB.AutoMigrate(&User{}, &UserSession{}, &Enterprise{}, &EnterpriseMembership{}))
 	require.NoError(t, DB.Exec("DELETE FROM user_sessions").Error)
 	oldRedisEnabled := common.RedisEnabled
 	oldActiveLimit := common.UserSessionActiveLimit

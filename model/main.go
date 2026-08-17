@@ -72,7 +72,14 @@ func createRootAccountIfNeed() error {
 			AccessToken: nil,
 			Quota:       100000000,
 		}
-		DB.Create(&rootUser)
+		if err := DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&rootUser).Error; err != nil {
+				return err
+			}
+			return EnsurePlatformAdminEnterpriseWithTx(tx, &rootUser)
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -311,7 +318,7 @@ func migrateDB() error {
 			return err
 		}
 	}
-	return nil
+	return migrateEnterpriseFoundation(DB)
 }
 
 func migrateDBFast() error {
@@ -391,6 +398,9 @@ func migrateDBFast() error {
 		if err := DB.AutoMigrate(&SubscriptionPlan{}); err != nil {
 			return err
 		}
+	}
+	if err := migrateEnterpriseFoundation(DB); err != nil {
+		return err
 	}
 	common.SysLog("database migrated")
 	return nil
