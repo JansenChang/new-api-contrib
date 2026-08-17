@@ -22,7 +22,7 @@
 ## 实施顺序
 
 1. 技术审阅本设计，确认“历史 NUL 一律失败关闭”、日志范围 manifest、40 表 allowlist 与不使用运行时 `AutoMigrate` 的边界。
-2. ✅ 在独立分支 `codex/postgres-primary-copy-preflight` 完成首个纯预检库切片：非敏感 manifest 校验、SQLite-34 固定 34/40 表范围、源 schema 漂移与目标非空拒绝、固定列签名比较接口、非敏感报告骨架。该切片只接收内存元数据快照，不打开连接、不执行 DDL/DML；完整 34 表签名转录仍需下一切片在签名审计完成后补齐。
+2. ✅ `codex/postgres-primary-copy-preflight` 完成纯预检骨架；`codex/postgres-primary-copy-static-profile` 转录 `SQLite-34` 34 张来源表的完整编译期列/索引签名，并强化候选 SHA、身份哈希、快照证明、SQLite+主日志范围与批次上限门禁。切片只接收内存元数据快照，不打开连接、不执行 DDL/DML。
 3. 先写 SQLite → PostgreSQL 合成回归，再接入真实 MySQL 驱动 fixture；两者都覆盖 NUL/UTF-8/JSON/范围/sequence/企业账务失败关闭。
 4. 候选启动验证不引入未批准回填；逐表、引用和聚合对账通过后，提交独立分支并回写证据。
 5. 仅在 P-M2 合成合同完成且另获授权后，做 P-M3 的生产快照脱敏 UAT；当前 158 的双 UAT 应用共享 PostgreSQL 容器，数据库级隔离确认前不得使用。
@@ -50,6 +50,6 @@ git diff --check
 
 ## 当前结果与 NOT_RUN
 
-- 已完成：技术设计、当前模型范围与失败关闭规则的只读审计；首个代码切片已证明固定表集合可接受，schema 漂移/目标非空/缺失快照证明会在任何写入前失败，且预检输入无副作用；`TableSpec` 已提供编译期列名/SQLite 声明类型/notnull/PK 序位比较接口。
+- 已完成：固定 `e451c93f1d44a1a84f9bab07937510458c8bd642` 候选的 34 张表完整列签名与索引签名转录；表/列/类型/notnull/PK/索引漂移和目标非空均失败关闭；manifest 要求不同的源/目标身份哈希、非空快照证明、SQLite 源与 `primary` 日志范围。
 - 验证：`go build ./pkg/postgresmigration`、`git diff --check`。定向 `go test` 在本机 Go 测试进程未返回，结果记为 `UNKNOWN`，未据此宣称通过。
 - `NOT_RUN`：实际 SQLite/MySQL 连接读取、PostgreSQL schema/DML、完整 SQLite-34 复制、MySQL 合成 fixture、全模型 PostgreSQL 合同、158 UAT、生产快照、生产切换。

@@ -13,7 +13,9 @@ import (
 )
 
 const (
-	AllowlistSQLite34 = "sqlite-34-pre-enterprise"
+	AllowlistSQLite34           = "sqlite-34-pre-enterprise"
+	SQLite34ProfileCandidateSHA = "e451c93f1d44a1a84f9bab07937510458c8bd642"
+	MaxPreflightBatchSize       = 1000
 
 	SourceSQLite   DatabaseType = "sqlite"
 	SourceMySQL    DatabaseType = "mysql"
@@ -37,15 +39,17 @@ type Manifest struct {
 	CandidateSHA       string
 	SourceType         DatabaseType
 	TargetType         DatabaseType
+	SourceIdentityHash string
 	LogScope           LogScope
 	AllowlistVersion   string
 	BatchSize          int
 	TargetIdentityHash string
-	SnapshotProven     bool
+	SnapshotProof      string
 }
 
 type TableSnapshot struct {
 	Columns  []ColumnMetadata
+	Indexes  []IndexMetadata
 	RowCount int64
 }
 
@@ -65,9 +69,24 @@ type ColumnMetadata struct {
 	PKOrder    int
 }
 
+type IndexSpec struct {
+	Name    string
+	Unique  bool
+	Origin  string
+	Columns []string
+}
+
+type IndexMetadata struct {
+	Name    string
+	Unique  bool
+	Origin  string
+	Columns []string
+}
+
 type TableSpec struct {
 	Name    string
 	Columns []ColumnSpec
+	Indexes []IndexSpec
 }
 
 type SchemaSnapshot struct {
@@ -105,7 +124,7 @@ type Profile struct {
 }
 
 var sqlite34SourceTables = []string{
-	"abilities", "auth_flows", "authz_roles", "casbin_rules", "channels",
+	"abilities", "auth_flows", "authz_roles", "casbin_rule", "channels",
 	"checkins", "custom_oauth_providers", "external_identity_claims", "logs",
 	"midjourneys", "models", "options", "passkey_credentials", "perf_metrics",
 	"prefill_groups", "quota_data", "redemptions", "setups", "subscription_plans",
@@ -115,29 +134,46 @@ var sqlite34SourceTables = []string{
 	"top_ups", "subscription_orders",
 }
 
-var sqlite34TargetTables = append(append([]string{}, sqlite34SourceTables...),
-	"api_key_deliveries", "enterprises", "enterprise_memberships", "enterprise_invitations",
-	"enterprise_ledgers", "enterprise_usage_records")
-
 // SQLite34PreEnterprise returns a copy of the fixed table allowlist. Callers
 // cannot mutate the package-level profile by changing the returned slices.
 func SQLite34PreEnterprise() Profile {
-	sourceTables := append([]string(nil), sqlite34SourceTables...)
-	sourceSpecs := make([]TableSpec, len(sourceTables))
-	for i, name := range sourceTables {
-		sourceSpecs[i] = TableSpec{Name: name}
+	sourceSpecs := cloneTableSpecs(sqlite34TableSpecs)
+	sourceTables := make([]string, len(sourceSpecs))
+	for i, spec := range sourceSpecs {
+		sourceTables[i] = spec.Name
 	}
 	return Profile{
 		Name:         AllowlistSQLite34,
 		SourceTables: sourceTables,
-		TargetTables: append([]string(nil), sqlite34TargetTables...),
+		TargetTables: append(append([]string(nil), sourceTables...), "api_key_deliveries", "enterprises", "enterprise_memberships", "enterprise_invitations", "enterprise_ledgers", "enterprise_usage_records"),
 		SourceSpecs:  sourceSpecs,
 	}
+}
+
+func cloneTableSpecs(specs []TableSpec) []TableSpec {
+	result := make([]TableSpec, len(specs))
+	for i, spec := range specs {
+		result[i] = TableSpec{Name: spec.Name, Columns: append([]ColumnSpec(nil), spec.Columns...), Indexes: make([]IndexSpec, len(spec.Indexes))}
+		for j, index := range spec.Indexes {
+			result[i].Indexes[j] = IndexSpec{Name: index.Name, Unique: index.Unique, Origin: index.Origin, Columns: append([]string(nil), index.Columns...)}
+		}
+	}
+	return result
 }
 
 // Preflight validates only metadata. It never performs DDL/DML and therefore
 // has no database side effects.
 func Preflight(manifest Manifest, source, target SchemaSnapshot) Report {
+	return preflight(SQLite34PreEnterprise(), manifest, source, target)
+}
+
+// PreflightWithProfile is kept for deterministic profile-contract tests. It
+// is not an import path: it still only compares in-memory metadata.
+func PreflightWithProfile(profile Profile, manifest Manifest, source, target SchemaSnapshot) Report {
+	return preflight(profile, manifest, source, target)
+}
+
+func preflight(profile Profile, manifest Manifest, source, target SchemaSnapshot) Report {
 	report := Report{
 		CandidateSHA: manifest.CandidateSHA,
 		Stage:        "preflight",
@@ -153,30 +189,40 @@ func Preflight(manifest Manifest, source, target SchemaSnapshot) Report {
 	if strings.TrimSpace(manifest.CandidateSHA) == "" {
 		fail("", "candidate_sha_required")
 	}
-	if manifest.SourceType != SourceSQLite && manifest.SourceType != SourceMySQL {
-		fail("", "unsupported_source_type")
+	if manifest.CandidateSHA != SQLite34ProfileCandidateSHA {
+		fail("", "candidate_sha_mismatch")
+	}
+	if manifest.SourceType != SourceSQLite {
+		fail("", "sqlite34_source_only")
 	}
 	if manifest.TargetType != TargetPostgres {
 		fail("", "unsupported_target_type")
 	}
-	if manifest.SourceType == DatabaseType(manifest.TargetType) && manifest.SourceType != "" {
-		fail("", "source_target_must_differ")
+	if strings.TrimSpace(manifest.SourceIdentityHash) == "" {
+		fail("", "source_identity_hash_required")
 	}
-	if !validLogScope(manifest.LogScope) {
-		fail("", "log_scope_required")
+	if strings.TrimSpace(manifest.TargetIdentityHash) == "" {
+		fail("", "target_identity_hash_required")
+	}
+	if strings.TrimSpace(manifest.SourceIdentityHash) == strings.TrimSpace(manifest.TargetIdentityHash) && strings.TrimSpace(manifest.SourceIdentityHash) != "" {
+		fail("", "source_target_identity_must_differ")
+	}
+	if manifest.LogScope != LogPrimary {
+		fail("", "sqlite34_log_primary_only")
 	}
 	if manifest.AllowlistVersion != AllowlistSQLite34 {
 		fail("", "unsupported_allowlist")
 	}
-	if manifest.BatchSize <= 0 {
-		fail("", "batch_size_required")
+	if manifest.BatchSize <= 0 || manifest.BatchSize > MaxPreflightBatchSize {
+		fail("", "batch_size_out_of_range")
 	}
-	if !manifest.SnapshotProven {
+	if strings.TrimSpace(manifest.SnapshotProof) == "" {
 		fail("", "snapshot_proof_required")
 	}
 
-	profile := SQLite34PreEnterprise()
-	if !validateSourceSchema(profile, source) {
+	if !validateProfile(profile) {
+		fail("", "incomplete_table_spec")
+	} else if !validateSourceSchema(profile, source) {
 		fail("", "source_schema_drift")
 	}
 	if len(target.Tables) != 0 {
@@ -190,6 +236,23 @@ func Preflight(manifest Manifest, source, target SchemaSnapshot) Report {
 		sort.Slice(report.Tables, func(i, j int) bool { return report.Tables[i].Name < report.Tables[j].Name })
 	}
 	return report
+}
+
+func validateProfile(profile Profile) bool {
+	if profile.Name != AllowlistSQLite34 || len(profile.SourceSpecs) != 34 || len(profile.SourceTables) != 34 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(profile.SourceSpecs))
+	for _, spec := range profile.SourceSpecs {
+		if spec.Name == "" || len(spec.Columns) == 0 {
+			return false
+		}
+		if _, exists := seen[spec.Name]; exists {
+			return false
+		}
+		seen[spec.Name] = struct{}{}
+	}
+	return true
 }
 
 func (r Report) OK() bool { return len(r.Failures) == 0 }
@@ -227,11 +290,31 @@ func validateSourceSchema(profile Profile, source SchemaSnapshot) bool {
 	}
 	for _, spec := range profile.SourceSpecs {
 		snapshot, ok := source.Tables[spec.Name]
-		if !ok || len(spec.Columns) == 0 {
-			continue
+		if !ok {
+			return false
 		}
 		if !sameColumns(snapshot.Columns, spec.Columns) {
 			return false
+		}
+		if !sameIndexes(snapshot.Indexes, spec.Indexes) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameIndexes(actual []IndexMetadata, expected []IndexSpec) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for i := range expected {
+		if actual[i].Name != expected[i].Name || actual[i].Unique != expected[i].Unique || actual[i].Origin != expected[i].Origin || len(actual[i].Columns) != len(expected[i].Columns) {
+			return false
+		}
+		for j := range expected[i].Columns {
+			if actual[i].Columns[j] != expected[i].Columns[j] {
+				return false
+			}
 		}
 	}
 	return true
