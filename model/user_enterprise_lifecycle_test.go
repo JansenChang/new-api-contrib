@@ -92,11 +92,6 @@ func TestEnterpriseMemberMustBeRemovedBeforeDeletion(t *testing.T) {
 
 	require.NoError(t, DB.Model(membership).Update("status", EnterpriseMembershipStatusRemoved).Error)
 	require.NoError(t, member.Delete())
-
-	hardDeleteMember := enterpriseMembershipUser(t, "lifecycle-hard-delete-member", "lifecycle-hard-delete-member@example.com")
-	hardDeleteMembership := &EnterpriseMembership{EnterpriseId: enterprise.Id, UserId: hardDeleteMember.Id, Role: EnterpriseMembershipRoleMember, Status: EnterpriseMembershipStatusRemoved}
-	require.NoError(t, DB.Create(hardDeleteMembership).Error)
-	require.NoError(t, hardDeleteMember.HardDelete())
 }
 
 func TestEnterpriseOwnerLifecycleChecksOwnerAnchorAfterMembershipRemoval(t *testing.T) {

@@ -1022,7 +1022,7 @@ func (user *User) HardDelete() error {
 	var deletedAuthVersion int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		if err := guardEnterpriseOwnerLifecycleWithTx(tx, user.Id); err != nil {
+		if err := guardEnterpriseDeletionLifecycleWithTx(tx, user.Id); err != nil {
 			return err
 		}
 		deletedAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
