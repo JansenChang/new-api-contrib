@@ -57,6 +57,10 @@ func sweepTimedOutTasks(ctx context.Context) {
 	timedOutCount := 0
 
 	for _, task := range tasks {
+		if IsEnterpriseTask(task) {
+			MarkEnterpriseTaskManualReview(ctx, task, task.Status, reason)
+			continue
+		}
 		isLegacy := task.SubmitTime > 0 && task.SubmitTime < model.TaskRefundLegacyCutoff
 
 		oldStatus := task.Status
@@ -141,8 +145,16 @@ func RunTaskPollingOnce(ctx context.Context, report func(processed, total int)) 
 		taskM := make(map[string]*model.Task)
 		nullTaskIds := make([]int64, 0)
 		for _, task := range tasks {
+			if IsEnterpriseTask(task) && task.PrivateData.UpstreamTaskID == "" {
+				MarkEnterpriseTaskManualReview(ctx, task, task.Status, "企业任务缺少上游任务 ID，等待人工处理")
+				continue
+			}
 			upstreamID := task.GetUpstreamTaskID()
 			if upstreamID == "" {
+				if IsEnterpriseTask(task) {
+					MarkEnterpriseTaskManualReview(ctx, task, task.Status, "企业任务缺少上游任务 ID，等待人工处理")
+					continue
+				}
 				// 统计失败的未完成任务
 				nullTaskIds = append(nullTaskIds, task.ID)
 				continue
@@ -221,6 +233,10 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 		var failedIDs []int64
 		for _, upstreamID := range taskIds {
 			if t, ok := taskM[upstreamID]; ok {
+				if IsEnterpriseTask(t) {
+					MarkEnterpriseTaskManualReview(ctx, t, t.Status, fmt.Sprintf("企业任务渠道读取失败，等待人工处理，渠道ID：%d", channelId))
+					continue
+				}
 				failedIDs = append(failedIDs, t.ID)
 			}
 		}
@@ -296,6 +312,10 @@ func updateSunoTasks(ctx context.Context, channelId int, taskIds []string, taskM
 			task.Progress = "100%"
 		}
 		task.Data = responseItem.Data
+		if IsEnterpriseTask(task) && (isFailure || task.Status == model.TaskStatusSuccess) {
+			CompleteEnterpriseTask(ctx, task, prevStatus)
+			continue
+		}
 
 		// 持久化走 CAS，防止重叠轮询/sweep/多实例/持久化失败重试导致重复退款或覆盖终态。
 		won, err := task.UpdateWithStatus(prevStatus)
@@ -393,6 +413,10 @@ func updateVideoTasks(ctx context.Context, platform constant.TaskPlatform, chann
 		var failedIDs []int64
 		for _, upstreamID := range taskIds {
 			if t, ok := taskM[upstreamID]; ok {
+				if IsEnterpriseTask(t) {
+					MarkEnterpriseTaskManualReview(ctx, t, t.Status, fmt.Sprintf("企业任务渠道读取失败，等待人工处理，渠道ID：%d", channelId))
+					continue
+				}
 				failedIDs = append(failedIDs, t.ID)
 			}
 		}
@@ -571,6 +595,10 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	}
 
 	isDone := task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure
+	if isDone && IsEnterpriseTask(task) {
+		CompleteEnterpriseTask(ctx, task, snap.Status)
+		return nil
+	}
 	if isDone && snap.Status != task.Status {
 		won, err := task.UpdateWithStatus(snap.Status)
 		if err != nil {

@@ -396,6 +396,14 @@ func usageSemanticFromUsage(relayInfo *relaycommon.RelayInfo, usage *dto.Usage) 
 
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []string) {
 	originUsage := usage
+	if originUsage == nil {
+		if enterpriseBilling, ok := relayInfo.Billing.(*EnterpriseBillingSession); ok {
+			if err := enterpriseBilling.MarkManualReview(); err != nil {
+				logger.LogError(ctx, "enterprise relay usage is unknown and could not enter manual review: "+err.Error())
+			}
+			return
+		}
+	}
 	billingUsage := effectiveBillingUsage(usage)
 	if usage == nil {
 		extraContent = append(extraContent, "上游无计费信息")

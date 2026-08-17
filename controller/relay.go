@@ -78,6 +78,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError *types.NewAPIError
 		ws          *websocket.Conn
 	)
+	if relayFormat == types.RelayFormatOpenAIRealtime && common.EnterpriseBillingEnabled {
+		enterpriseRequired, err := model.EnterpriseBillingRequired(c.GetInt("id"))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "无法确认企业计费身份"})
+			return
+		}
+		if enterpriseRequired {
+			c.JSON(http.StatusConflict, gin.H{"error": "企业资助调用暂不支持 Realtime"})
+			return
+		}
+	}
 
 	if relayFormat == types.RelayFormatOpenAIRealtime {
 		var err error
@@ -125,6 +136,20 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = types.NewError(err, types.ErrorCodeGenRelayInfoFailed)
 		return
 	}
+	enterpriseRequired, err := model.EnterpriseBillingRequired(relayInfo.UserId)
+	if err != nil {
+		newAPIError = types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+		return
+	}
+	if enterpriseRequired && !supportsEnterpriseSynchronousRelay(c, relayFormat, request) {
+		newAPIError = types.NewErrorWithStatusCode(
+			fmt.Errorf("企业资助调用暂仅支持非流式 OpenAI chat/completions 和 completions"),
+			types.ErrorCodeInvalidRequest,
+			http.StatusConflict,
+			types.ErrOptionWithSkipRetry(),
+		)
+		return
+	}
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
@@ -161,7 +186,73 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	// common.SetContextKey(c, constant.ContextKeyTokenCountMeta, meta)
 
-	if priceData.FreeModel {
+	var enterpriseBilling *service.EnterpriseBillingSession
+	if enterpriseRequired {
+		if priceData.FreeModel {
+			newAPIError = types.NewErrorWithStatusCode(
+				fmt.Errorf("企业资助调用暂不支持免费模型"),
+				types.ErrorCodeInvalidRequest,
+				http.StatusConflict,
+				types.ErrOptionWithSkipRetry(),
+			)
+			return
+		}
+		bodyStorage, bodyErr := common.GetBodyStorage(c)
+		if bodyErr != nil {
+			newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		body, bodyErr := bodyStorage.Bytes()
+		if bodyErr != nil {
+			newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		fingerprint, fingerprintErr := service.EnterpriseRequestFingerprint(relayInfo.TokenId, c.Request.Method, c.Request.URL.Path, body)
+		if fingerprintErr != nil {
+			newAPIError = types.NewErrorWithStatusCode(fingerprintErr, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		outcome, reserveErr := model.ReserveEnterpriseUsage(model.EnterpriseUsageCommand{
+			ActorUserID:        relayInfo.UserId,
+			TokenID:            relayInfo.TokenId,
+			IdempotencyKey:     strings.TrimSpace(c.GetHeader("Idempotency-Key")),
+			RequestFingerprint: fingerprint,
+			RequestID:          relayInfo.RequestId,
+			ModelName:          relayInfo.OriginModelName,
+			ReservedQuota:      priceData.QuotaToPreConsume,
+		})
+		if reserveErr != nil {
+			statusCode := http.StatusForbidden
+			if errors.Is(reserveErr, model.ErrEnterpriseUsageConflict) {
+				statusCode = http.StatusConflict
+			} else if errors.Is(reserveErr, model.ErrEnterpriseUsageInvalidRequest) {
+				statusCode = http.StatusBadRequest
+			}
+			newAPIError = types.NewErrorWithStatusCode(reserveErr, types.ErrorCodeInsufficientUserQuota, statusCode, types.ErrOptionWithSkipRetry())
+			return
+		}
+		if !outcome.Execute {
+			c.JSON(service.EnterpriseUsageReplayHTTPStatus(outcome.State), gin.H{
+				"enterprise_usage": gin.H{
+					"usage_id":       outcome.UsageID,
+					"state":          outcome.State,
+					"reserved_quota": outcome.ReservedQuota,
+					"settled_quota":  outcome.SettledQuota,
+					"refunded_quota": outcome.RefundedQuota,
+					"anomaly_quota":  outcome.AnomalyQuota,
+				},
+			})
+			return
+		}
+		enterpriseBilling, reserveErr = service.NewEnterpriseBillingSession(outcome)
+		if reserveErr != nil {
+			newAPIError = types.NewError(reserveErr, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+			return
+		}
+		relayInfo.Billing = enterpriseBilling
+		relayInfo.BillingSource = service.BillingSourceEnterprise
+		relayInfo.FinalPreConsumedQuota = enterpriseBilling.GetPreConsumedQuota()
+	} else if priceData.FreeModel {
 		logger.LogInfo(c, fmt.Sprintf("模型 %s 免费，跳过预扣费", relayInfo.OriginModelName))
 	} else {
 		newAPIError = service.PreConsumeBilling(c, priceData.QuotaToPreConsume, relayInfo)
@@ -216,6 +307,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		if enterpriseBilling != nil {
+			if err := enterpriseBilling.SnapshotChannel(channel.Id); err != nil {
+				newAPIError = types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+				break
+			}
+			if err := enterpriseBilling.MarkUpstreamSubmitted(); err != nil {
+				newAPIError = types.NewError(err, types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
+				break
+			}
+		}
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -230,6 +331,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			relayInfo.LastError = nil
+			if enterpriseBilling != nil && !enterpriseBilling.IsTerminal() {
+				if err := enterpriseBilling.MarkManualReview(); err != nil {
+					common.SysError("enterprise relay completed without settlement and could not enter manual review: " + err.Error())
+				}
+			}
 			return
 		}
 
@@ -238,11 +344,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if enterpriseBilling != nil || !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}
-
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
@@ -295,6 +400,21 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 		// Best-effort: leave CombineText empty to avoid large allocations.
 	}
 	return meta
+}
+
+// supportsEnterpriseSynchronousRelay deliberately exposes one narrow first
+// enterprise path. It accepts only JSON, non-streaming OpenAI text requests;
+// every other relay format stays rejected while it lacks an equivalent
+// reservation/unknown-result settlement boundary.
+func supportsEnterpriseSynchronousRelay(c *gin.Context, relayFormat types.RelayFormat, request dto.Request) bool {
+	if relayFormat != types.RelayFormatOpenAI || c == nil || c.Request == nil {
+		return false
+	}
+	if !strings.HasSuffix(c.Request.URL.Path, "/chat/completions") && !strings.HasSuffix(c.Request.URL.Path, "/completions") {
+		return false
+	}
+	openAIRequest, ok := request.(*dto.GeneralOpenAIRequest)
+	return ok && !openAIRequest.IsStream(c.Request)
 }
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
@@ -418,6 +538,15 @@ func RelayMidjourney(c *gin.Context) {
 		})
 		return
 	}
+	enterpriseRequired, enterpriseErr := model.EnterpriseBillingRequired(relayInfo.UserId)
+	if enterpriseErr != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"description": "无法确认企业计费身份", "type": "upstream_error", "code": 4})
+		return
+	}
+	if enterpriseRequired {
+		c.JSON(http.StatusConflict, gin.H{"description": "企业资助调用暂不支持 Midjourney", "type": "enterprise_billing_error", "code": 4})
+		return
+	}
 
 	var mjErr *taskdto.MidjourneyResponse
 	switch relayInfo.RelayMode {
@@ -499,7 +628,6 @@ func RelayTask(c *gin.Context) {
 		})
 		return
 	}
-
 	if taskErr := relay.ResolveOriginTask(c, relayInfo); taskErr != nil {
 		respondTaskError(c, taskErr)
 		return
@@ -509,6 +637,28 @@ func RelayTask(c *gin.Context) {
 	var taskErr *taskdto.TaskError
 	defer func() {
 		if taskErr != nil && relayInfo.Billing != nil {
+			if relayInfo.BillingSource == service.BillingSourceEnterprise {
+				if draftID, ok := c.Get("enterprise_task_draft_id"); ok {
+					if id, ok := draftID.(int64); ok && id > 0 {
+						var task model.Task
+						if err := model.DB.First(&task, id).Error; err != nil {
+							if session, ok := relayInfo.Billing.(*service.EnterpriseBillingSession); ok {
+								_ = session.MarkManualReview()
+							}
+							common.SysError("enterprise task draft read failed: " + err.Error())
+						} else if session, ok := relayInfo.Billing.(*service.EnterpriseBillingSession); ok && session.WasSubmitted() {
+							service.MarkEnterpriseTaskManualReview(c, &task, task.Status, "企业任务提交结果未知，等待人工处理")
+						} else {
+							task.Status = model.TaskStatusFailure
+							task.Progress = "100%"
+							task.FinishTime = time.Now().Unix()
+							task.FailReason = taskErr.Message
+							service.CompleteEnterpriseTask(c, &task, model.TaskStatusSubmitting)
+						}
+					}
+				}
+				return
+			}
 			relayInfo.Billing.Refund(c)
 		}
 	}()
@@ -566,7 +716,7 @@ func RelayTask(c *gin.Context) {
 				types.NewOpenAIError(taskErr.Error, types.ErrorCodeBadResponseStatusCode, taskErr.StatusCode))
 		}
 
-		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
+		if relayInfo.BillingSource == service.BillingSourceEnterprise || !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
 	}
@@ -579,6 +729,50 @@ func RelayTask(c *gin.Context) {
 
 	// ── 成功：结算 + 日志 + 插入任务 ──
 	if taskErr == nil {
+		if result.EnterpriseReplay != nil {
+			c.JSON(service.EnterpriseUsageReplayHTTPStatus(result.EnterpriseReplay.State), gin.H{
+				"enterprise_usage": gin.H{
+					"usage_id":       result.EnterpriseReplay.UsageID,
+					"state":          result.EnterpriseReplay.State,
+					"reserved_quota": result.EnterpriseReplay.ReservedQuota,
+					"settled_quota":  result.EnterpriseReplay.SettledQuota,
+					"refunded_quota": result.EnterpriseReplay.RefundedQuota,
+					"anomaly_quota":  result.EnterpriseReplay.AnomalyQuota,
+				},
+			})
+			return
+		}
+		if result.EnterpriseTaskID > 0 {
+			var task model.Task
+			if err := model.DB.First(&task, result.EnterpriseTaskID).Error; err != nil {
+				if session, ok := relayInfo.Billing.(*service.EnterpriseBillingSession); ok {
+					_ = session.MarkManualReview()
+				}
+				taskErr = service.TaskErrorWrapperLocal(err, "enterprise_task_draft_missing", http.StatusInternalServerError)
+			} else {
+				task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
+				task.Status = model.TaskStatusSubmitted
+				task.Data = result.TaskData
+				task.Quota = result.Quota
+				if won, err := task.UpdateWithStatus(model.TaskStatusSubmitting); err != nil || !won {
+					service.MarkEnterpriseTaskManualReview(c, &task, model.TaskStatusSubmitting, "企业任务提交确认写入失败，等待人工处理")
+					if err == nil {
+						err = errors.New("enterprise task submit confirmation CAS did not match")
+					}
+					taskErr = service.TaskErrorWrapperLocal(err, "enterprise_task_submit_confirm_failed", http.StatusInternalServerError)
+				}
+			}
+		}
+		if taskErr != nil {
+			respondTaskError(c, taskErr)
+			return
+		}
+		if result.EnterpriseTaskID > 0 {
+			// 企业异步资金保持在 UPSTREAM_SUBMITTED，等待轮询终态按固定
+			// usage_record_id 结算或退款；不得在提交确认阶段走个人式结算。
+			service.LogTaskConsumption(c, relayInfo)
+			return
+		}
 		if settleErr := service.SettleBilling(c, relayInfo, result.Quota); settleErr != nil {
 			common.SysError("settle task billing error: " + settleErr.Error())
 		}

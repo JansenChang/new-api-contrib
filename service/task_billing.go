@@ -160,10 +160,89 @@ func taskModelName(task *model.Task) string {
 	return task.Properties.OriginModelName
 }
 
+// IsEnterpriseTask identifies the durable enterprise snapshot. It deliberately
+// does not consult the user's current membership or personal billing state.
+func IsEnterpriseTask(task *model.Task) bool {
+	return task != nil && task.PrivateData.EnterpriseUsageRecordId > 0
+}
+
+// CompleteEnterpriseTask applies the enterprise money transition before making
+// the Task terminal. If the second write loses a race, the task remains
+// pollable and the idempotent Usage transition is retried on the next pass.
+func CompleteEnterpriseTask(ctx context.Context, task *model.Task, previousStatus model.TaskStatus) bool {
+	if !IsEnterpriseTask(task) {
+		return false
+	}
+
+	var err error
+	switch task.Status {
+	case model.TaskStatusSuccess:
+		_, err = model.SettleEnterpriseUsage(task.PrivateData.EnterpriseUsageRecordId, task.Quota)
+	case model.TaskStatusFailure:
+		_, err = model.RefundEnterpriseUsage(task.PrivateData.EnterpriseUsageRecordId)
+		if err == nil {
+			task.Quota = 0
+		}
+	default:
+		return false
+	}
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("企业任务终态资金处理失败 task %s: %s", task.TaskID, err.Error()))
+		task.Status = previousStatus
+		MarkEnterpriseTaskManualReview(ctx, task, previousStatus, "企业任务资金处理失败，等待人工处理")
+		return true
+	}
+
+	won, updateErr := task.UpdateWithStatus(previousStatus)
+	if updateErr != nil {
+		logger.LogError(ctx, fmt.Sprintf("企业任务终态回写失败 task %s: %s", task.TaskID, updateErr.Error()))
+		return true
+	}
+	if !won {
+		logger.LogWarn(ctx, fmt.Sprintf("企业任务终态 CAS 未命中 task %s，保留以便幂等重试", task.TaskID))
+	}
+	return true
+}
+
+// MarkEnterpriseTaskManualReview keeps an already-submitted or otherwise
+// indeterminate enterprise task out of polling and automatic refunds.
+func MarkEnterpriseTaskManualReview(ctx context.Context, task *model.Task, previousStatus model.TaskStatus, reason string) bool {
+	if !IsEnterpriseTask(task) {
+		return false
+	}
+	if _, err := model.MarkEnterpriseUsageManualReview(task.PrivateData.EnterpriseUsageRecordId); err != nil {
+		logger.LogError(ctx, fmt.Sprintf("企业任务转人工处理失败 task %s: %s", task.TaskID, err.Error()))
+		return true
+	}
+	if task.Status == model.TaskStatusManualReview {
+		return true
+	}
+	task.Status = model.TaskStatusManualReview
+	if reason != "" {
+		task.FailReason = reason
+	}
+	won, err := task.UpdateWithStatus(previousStatus)
+	if err != nil {
+		logger.LogError(ctx, fmt.Sprintf("企业任务人工处理状态回写失败 task %s: %s", task.TaskID, err.Error()))
+		return true
+	}
+	if !won {
+		logger.LogWarn(ctx, fmt.Sprintf("企业任务人工处理 CAS 未命中 task %s", task.TaskID))
+	}
+	return true
+}
+
 // RefundTaskQuota 统一的任务失败退款逻辑。
 // 当异步任务失败时，退还资金与令牌额度，并回减用户和渠道用量。
 // 返回资金来源是否已成功退还；失败时保留 quota，供显式重试或人工对账。
 func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool {
+	if IsEnterpriseTask(task) {
+		if task.Status != model.TaskStatusFailure {
+			logger.LogWarn(ctx, fmt.Sprintf("企业任务拒绝脱离终态处理退款 task %s", task.TaskID))
+			return false
+		}
+		return CompleteEnterpriseTask(ctx, task, task.Status)
+	}
 	quota := task.Quota
 	if quota == 0 {
 		return true
@@ -212,6 +291,15 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) bool 
 // reason 用于日志记录（例如 "token重算" 或 "adaptor调整"）。
 // clamps 可选：若计算 actualQuota 时发生额度饱和，将其记入日志 admin_info（仅管理员可见）。
 func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int, reason string, clamps ...*common.QuotaClamp) {
+	if IsEnterpriseTask(task) {
+		if task.Status != model.TaskStatusSuccess {
+			logger.LogWarn(ctx, fmt.Sprintf("企业任务拒绝脱离终态处理结算 task %s", task.TaskID))
+			return
+		}
+		task.Quota = actualQuota
+		CompleteEnterpriseTask(ctx, task, task.Status)
+		return
+	}
 	if actualQuota <= 0 {
 		return
 	}

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,10 +24,12 @@ import (
 )
 
 type TaskSubmitResult struct {
-	UpstreamTaskID string
-	TaskData       []byte
-	Platform       constant.TaskPlatform
-	Quota          int
+	UpstreamTaskID   string
+	TaskData         []byte
+	Platform         constant.TaskPlatform
+	Quota            int
+	EnterpriseTaskID int64
+	EnterpriseReplay *model.EnterpriseUsageOutcome
 	//PerCallPrice   types.PriceData
 }
 
@@ -203,7 +206,47 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	// 7. 预扣费（仅首次 — 重试时 info.Billing 已存在，跳过）
-	if info.Billing == nil && !info.PriceData.FreeModel {
+	enterpriseRequired, enterpriseErr := model.EnterpriseBillingRequired(info.UserId)
+	if enterpriseErr != nil {
+		return nil, service.TaskErrorWrapperLocal(enterpriseErr, "enterprise_billing_identity_failed", http.StatusInternalServerError)
+	}
+	var enterpriseTask *model.Task
+	if enterpriseRequired {
+		if info.PriceData.FreeModel {
+			return nil, service.TaskErrorWrapperLocal(errors.New("企业资助调用暂不支持免费异步任务"), "enterprise_billing_unsupported", http.StatusConflict)
+		}
+		storage, err := common.GetBodyStorage(c)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_request_body_failed", http.StatusBadRequest)
+		}
+		body, err := storage.Bytes()
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_request_body_failed", http.StatusBadRequest)
+		}
+		fingerprint, err := service.EnterpriseRequestFingerprint(info.TokenId, c.Request.Method, c.Request.URL.Path, body)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_request_fingerprint_failed", http.StatusBadRequest)
+		}
+		enterpriseTask = model.InitTask(platform, info)
+		enterpriseTask.Status = model.TaskStatusSubmitting
+		enterpriseTask.Quota = info.PriceData.Quota
+		enterpriseTask.Action = info.Action
+		outcome, err := model.ReserveEnterpriseUsageWithTask(model.EnterpriseUsageCommand{ActorUserID: info.UserId, TokenID: info.TokenId, IdempotencyKey: strings.TrimSpace(c.GetHeader("Idempotency-Key")), RequestFingerprint: fingerprint, RequestID: info.RequestId, ModelName: info.OriginModelName, ChannelID: info.ChannelId, ReservedQuota: info.PriceData.Quota}, enterpriseTask)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_usage_reserve_failed", http.StatusForbidden)
+		}
+		if !outcome.Execute {
+			return &TaskSubmitResult{EnterpriseReplay: &outcome}, nil
+		}
+		session, err := service.NewEnterpriseBillingSession(outcome)
+		if err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_usage_session_failed", http.StatusInternalServerError)
+		}
+		info.Billing = session
+		info.BillingSource = service.BillingSourceEnterprise
+		info.FinalPreConsumedQuota = session.GetPreConsumedQuota()
+		c.Set("enterprise_task_draft_id", enterpriseTask.ID)
+	} else if info.Billing == nil && !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
@@ -214,6 +257,11 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	requestBody, err := adaptor.BuildRequestBody(c, info)
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError)
+	}
+	if enterpriseTask != nil {
+		if err := info.Billing.(*service.EnterpriseBillingSession).MarkUpstreamSubmitted(); err != nil {
+			return nil, service.TaskErrorWrapperLocal(err, "enterprise_usage_submit_failed", http.StatusInternalServerError)
+		}
 	}
 
 	// 9. 发送请求
@@ -256,6 +304,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		TaskData:       taskData,
 		Platform:       platform,
 		Quota:          finalQuota,
+		EnterpriseTaskID: func() int64 {
+			if enterpriseTask != nil {
+				return enterpriseTask.ID
+			}
+			return 0
+		}(),
 	}, nil
 }
 
@@ -428,6 +482,15 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 // 仅当渠道类型为 Gemini 或 Vertex 时触发；其他渠道或出错时返回 nil。
 // 当非 OpenAI Video API 时，还会构建自定义格式的响应体。
 func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
+	if service.IsEnterpriseTask(task) {
+		if task.PrivateData.UpstreamTaskID == "" {
+			service.MarkEnterpriseTaskManualReview(context.Background(), task, task.Status, "企业任务缺少上游任务 ID，等待人工处理")
+			return nil
+		}
+		if task.Status == model.TaskStatusSubmitting || task.Status == model.TaskStatusManualReview || task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure {
+			return nil
+		}
+	}
 	channelModel, err := model.GetChannelById(task.ChannelId, true)
 	if err != nil {
 		return nil
@@ -482,7 +545,9 @@ func tryRealtimeFetch(task *model.Task, isOpenAIVideoAPI bool) []byte {
 		task.PrivateData.ResultURL = taskcommon.BuildProxyURL(task.TaskID)
 	}
 
-	if !snap.Equal(task.Snapshot()) {
+	if service.IsEnterpriseTask(task) && (task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure) {
+		service.CompleteEnterpriseTask(context.Background(), task, snap.Status)
+	} else if !snap.Equal(task.Snapshot()) {
 		_, _ = task.UpdateWithStatus(snap.Status)
 	}
 

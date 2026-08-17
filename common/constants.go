@@ -68,8 +68,8 @@ var EmailDefaultTokenEnabled = false
 // It is intentionally independent from the two legacy transition switches.
 var SinglePrimaryAPIKeyEnabled = false
 
-// EnterpriseBillingEnabled releases C2/D/B/E together. It must stay false
-// until their isolated UAT gate has passed.
+// EnterpriseBillingEnabled is the Root-only joint release gate for enterprise
+// funding. It stays false until B, C2, D and E pass isolated UAT together.
 var EnterpriseBillingEnabled = false
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false

@@ -18,6 +18,16 @@ func DecodeJson(reader io.Reader, v any) error {
 	return json.NewDecoder(reader).Decode(v)
 }
 
+// DecodeJsonUseNumber decodes untyped JSON without converting large integer
+// literals through float64. Callers that later re-marshal a generic value (for
+// example, idempotency fingerprints) must use this variant to avoid silently
+// collapsing distinct JSON numbers.
+func DecodeJsonUseNumber(reader io.Reader, v any) error {
+	decoder := json.NewDecoder(reader)
+	decoder.UseNumber()
+	return decoder.Decode(v)
+}
+
 func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }

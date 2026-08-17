@@ -3,13 +3,16 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/types"
@@ -50,6 +53,10 @@ func TestMain(m *testing.M) {
 		&model.UserSubscription{},
 		&model.SystemTask{},
 		&model.SystemTaskLock{},
+		&model.Enterprise{},
+		&model.EnterpriseMembership{},
+		&model.EnterpriseLedger{},
+		&model.EnterpriseUsageRecord{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -74,7 +81,44 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM user_subscriptions")
 		model.DB.Exec("DELETE FROM system_task_locks")
 		model.DB.Exec("DELETE FROM system_tasks")
+		model.DB.Exec("DELETE FROM enterprise_usage_records")
+		model.DB.Exec("DELETE FROM enterprise_ledgers")
+		model.DB.Exec("DELETE FROM enterprise_memberships")
+		model.DB.Exec("DELETE FROM enterprises")
 	})
+}
+
+func seedEnterpriseSubmittedTask(t *testing.T, userID int, quota int) (*model.Task, int64) {
+	t.Helper()
+	previousGate := common.EnterpriseBillingEnabled
+	common.EnterpriseBillingEnabled = true
+	t.Cleanup(func() { common.EnterpriseBillingEnabled = previousGate })
+
+	user := &model.User{Id: userID, Username: fmt.Sprintf("enterprise-task-%d", userID), Role: common.RoleAdminUser, Status: common.UserStatusEnabled}
+	require.NoError(t, model.DB.Create(user).Error)
+	enterprise := &model.Enterprise{Name: fmt.Sprintf("enterprise-task-%d", userID), OwnerUserId: userID, Status: model.EnterpriseStatusActive}
+	require.NoError(t, model.DB.Create(enterprise).Error)
+	require.NoError(t, model.DB.Create(&model.EnterpriseMembership{EnterpriseId: enterprise.Id, UserId: userID, Role: model.EnterpriseMembershipRoleOwner, Status: model.EnterpriseMembershipStatusActive}).Error)
+	require.NoError(t, model.DB.Model(user).Update("active_enterprise_id", enterprise.Id).Error)
+	_, err := model.CreditEnterpriseWallet(model.EnterpriseMoneyCommand{
+		EnterpriseID: enterprise.Id, ActorUserID: userID, Action: model.EnterpriseLedgerKindTopUp, Amount: quota * 2,
+		IdempotencyKey: fmt.Sprintf("enterprise-task-topup-%d", userID), ReferenceType: "enterprise_topup", ReferenceID: fmt.Sprintf("enterprise-task-topup-%d", userID), RequestID: "enterprise-task-test",
+	})
+	require.NoError(t, err)
+
+	task := &model.Task{TaskID: fmt.Sprintf("enterprise-task-%d", userID), UserId: userID, Quota: quota, Status: model.TaskStatusSubmitting, Progress: "0%", SubmitTime: time.Now().Unix()}
+	outcome, err := model.ReserveEnterpriseUsageWithTask(model.EnterpriseUsageCommand{
+		ActorUserID: userID, TokenID: userID + 10_000, IdempotencyKey: fmt.Sprintf("enterprise-task-usage-%d", userID),
+		RequestFingerprint: strings.Repeat("a", 64), RequestID: "enterprise-task-test", ModelName: "enterprise-task-model", ReservedQuota: quota,
+	}, task)
+	require.NoError(t, err)
+	_, err = model.MarkEnterpriseUsageUpstreamSubmitted(outcome.UsageID)
+	require.NoError(t, err)
+	task.Status = model.TaskStatusSubmitted
+	won, err := task.UpdateWithStatus(model.TaskStatusSubmitting)
+	require.NoError(t, err)
+	require.True(t, won)
+	return task, outcome.UsageID
 }
 
 func seedUser(t *testing.T, id int, quota int) {
@@ -156,6 +200,62 @@ func makeTask(userId, channelId, quota, tokenId int, billingSource string, subsc
 			},
 		},
 	}
+}
+
+func TestCompleteEnterpriseTaskSettlesBeforeTerminalTaskUpdate(t *testing.T) {
+	truncate(t)
+	task, usageID := seedEnterpriseSubmittedTask(t, 801, 60)
+	task.Status = model.TaskStatusSuccess
+	task.Progress = "100%"
+
+	require.True(t, CompleteEnterpriseTask(context.Background(), task, model.TaskStatusSubmitted))
+
+	var usage model.EnterpriseUsageRecord
+	var saved model.Task
+	var user model.User
+	require.NoError(t, model.DB.First(&usage, usageID).Error)
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	require.NoError(t, model.DB.Select("quota").Where("id = ?", task.UserId).First(&user).Error)
+	assert.Equal(t, model.EnterpriseUsageStateSettled, usage.State)
+	assert.Equal(t, model.TaskStatusSuccess, saved.Status)
+	assert.Zero(t, user.Quota)
+}
+
+func TestSweepTimedOutEnterpriseTaskMovesToManualReviewWithoutRefund(t *testing.T) {
+	truncate(t)
+	task, usageID := seedEnterpriseSubmittedTask(t, 802, 60)
+	task.SubmitTime = time.Now().Add(-2 * time.Hour).Unix()
+	require.NoError(t, task.Update())
+	previousTimeout := constant.TaskTimeoutMinutes
+	constant.TaskTimeoutMinutes = 1
+	t.Cleanup(func() { constant.TaskTimeoutMinutes = previousTimeout })
+
+	sweepTimedOutTasks(context.Background())
+
+	var usage model.EnterpriseUsageRecord
+	var saved model.Task
+	require.NoError(t, model.DB.First(&usage, usageID).Error)
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	assert.Equal(t, model.EnterpriseUsageStateManualReview, usage.State)
+	assert.Equal(t, model.TaskStatusManualReview, saved.Status)
+	assert.Equal(t, 60, usage.ReservedQuota)
+}
+
+func TestRunTaskPollingMovesEnterpriseTaskWithoutUpstreamIDToManualReview(t *testing.T) {
+	truncate(t)
+	task, usageID := seedEnterpriseSubmittedTask(t, 803, 60)
+	previousFactory := GetTaskAdaptorFunc
+	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return &taskPollingFetchAdaptor{} }
+	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
+
+	RunTaskPollingOnce(context.Background(), nil)
+
+	var usage model.EnterpriseUsageRecord
+	var saved model.Task
+	require.NoError(t, model.DB.First(&usage, usageID).Error)
+	require.NoError(t, model.DB.First(&saved, task.ID).Error)
+	assert.Equal(t, model.EnterpriseUsageStateManualReview, usage.State)
+	assert.Equal(t, model.TaskStatusManualReview, saved.Status)
 }
 
 func TestPriceDataOtherRatiosFilterAndSnapshot(t *testing.T) {
