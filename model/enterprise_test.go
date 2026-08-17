@@ -209,8 +209,8 @@ func TestMigrateEnterpriseFoundationAddsAnchorToLegacyUsers(t *testing.T) {
 	// legacy difference under test: the pre-enterprise column is absent.
 	require.NoError(t, db.AutoMigrate(&User{}))
 	legacyUsers := []User{
-		{Username: "legacy-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled},
-		{Username: "legacy-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled},
+		{Username: "legacy-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AffCode: "legacy-root-aff"},
+		{Username: "legacy-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AffCode: "legacy-admin-aff"},
 	}
 	require.NoError(t, db.Create(&legacyUsers).Error)
 	require.NoError(t, db.Migrator().DropColumn(&User{}, "active_enterprise_id"))

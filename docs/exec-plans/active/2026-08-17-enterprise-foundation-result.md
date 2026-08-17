@@ -33,6 +33,12 @@
 - 已于 2026-08-17 提交为 `d176cf836`，并合入 `codex/single-primary-api-key-clean` 的受控集成提交 `a53cfbef2`。干净集成工作树已复跑企业 model、管理员晋升/建企业和平台角色保护的定向测试，以及 `git diff --check`。
 - 其他切片的成员生命周期、账本动作、Relay 结算、Key 轮换和企业 E2E 均未实现。
 
+## 补充回归（2026-08-18）
+
+- 修正 `TestMigrateEnterpriseFoundationAddsAnchorToLegacyUsers` 的 SQLite 遗留用户夹具，为 Root/Admin 提供不同的 `aff_code`；该字段在当前 `User` 模型上具有唯一约束，夹具不能使用空值重复插入。
+- 重新运行 `go test ./model -run '^TestMigrateEnterpriseFoundationAddsAnchorToLegacyUsers$' -count=1 -v`：通过。
+- 重新运行 `go test ./model -run 'Test(MigrateEnterpriseFoundation|EnterpriseFoundation|EnsurePlatformAdmin)' -count=1`：通过。
+
 ## 可能冲突文件
 
 - 后续企业模型切片若扩展同一 `model/enterprise.go`，应保留本片的字段、表名和常量；迁移注册须继续位于既有用户迁移之后。
