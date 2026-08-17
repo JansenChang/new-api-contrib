@@ -212,10 +212,13 @@ func (p *SubscriptionPlan) NormalizeDefaults() {
 
 // Subscription order (payment -> webhook -> create UserSubscription)
 type SubscriptionOrder struct {
-	Id     int     `json:"id"`
-	UserId int     `json:"user_id" gorm:"index"`
-	PlanId int     `json:"plan_id" gorm:"index"`
-	Money  float64 `json:"money"`
+	Id                  int     `json:"id"`
+	UserId              int     `json:"user_id" gorm:"index"`
+	BillingSubjectType  string  `json:"billing_subject_type" gorm:"type:varchar(20);not null;default:'personal';index"`
+	BillingSubjectId    int     `json:"billing_subject_id" gorm:"type:int;not null;default:0;index"`
+	BillingEnterpriseId int     `json:"billing_enterprise_id" gorm:"type:int;not null;default:0;index"`
+	PlanId              int     `json:"plan_id" gorm:"index"`
+	Money               float64 `json:"money"`
 
 	TradeNo         string `json:"trade_no" gorm:"unique;type:varchar(255);index"`
 	PaymentMethod   string `json:"payment_method" gorm:"type:varchar(50)"`
@@ -228,6 +231,9 @@ type SubscriptionOrder struct {
 }
 
 func (o *SubscriptionOrder) Insert() error {
+	if err := normalizeBillingSubject(&o.BillingSubjectType, &o.BillingSubjectId, &o.BillingEnterpriseId, o.UserId); err != nil {
+		return err
+	}
 	if o.CreateTime == 0 {
 		o.CreateTime = common.GetTimestamp()
 	}
@@ -655,24 +661,36 @@ func upsertSubscriptionTopUpTx(tx *gorm.DB, order *SubscriptionOrder) error {
 	if err := tx.Where("trade_no = ?", order.TradeNo).First(&topup).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			topup = TopUp{
-				UserId:        order.UserId,
-				Amount:        0,
-				Money:         order.Money,
-				TradeNo:       order.TradeNo,
-				PaymentMethod: order.PaymentMethod,
-				CreateTime:    order.CreateTime,
-				CompleteTime:  now,
-				Status:        common.TopUpStatusSuccess,
+				UserId:              order.UserId,
+				BillingSubjectType:  order.BillingSubjectType,
+				BillingSubjectId:    order.BillingSubjectId,
+				BillingEnterpriseId: order.BillingEnterpriseId,
+				Amount:              0,
+				Money:               order.Money,
+				TradeNo:             order.TradeNo,
+				PaymentMethod:       order.PaymentMethod,
+				PaymentProvider:     order.PaymentProvider,
+				CreateTime:          order.CreateTime,
+				CompleteTime:        now,
+				Status:              common.TopUpStatusSuccess,
 			}
 			return tx.Create(&topup).Error
 		}
 		return err
+	}
+	if topup.BillingSubjectType != order.BillingSubjectType || topup.BillingSubjectId != order.BillingSubjectId || topup.BillingEnterpriseId != order.BillingEnterpriseId {
+		return ErrBillingSubjectImmutable
 	}
 	topup.Money = order.Money
 	if topup.PaymentMethod == "" {
 		topup.PaymentMethod = order.PaymentMethod
 	} else if topup.PaymentMethod != order.PaymentMethod {
 		return ErrPaymentMethodMismatch
+	}
+	if topup.PaymentProvider == "" {
+		topup.PaymentProvider = order.PaymentProvider
+	} else if topup.PaymentProvider != order.PaymentProvider {
+		return ErrPaymentProviderMismatch
 	}
 	if topup.CreateTime == 0 {
 		topup.CreateTime = order.CreateTime
