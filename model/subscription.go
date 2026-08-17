@@ -34,8 +34,9 @@ const (
 )
 
 var (
-	ErrSubscriptionOrderNotFound      = errors.New("subscription order not found")
-	ErrSubscriptionOrderStatusInvalid = errors.New("subscription order status invalid")
+	ErrSubscriptionOrderNotFound         = errors.New("subscription order not found")
+	ErrSubscriptionOrderStatusInvalid    = errors.New("subscription order status invalid")
+	ErrEnterpriseSubscriptionUnsupported = errors.New("enterprise subscription unsupported")
 )
 
 const (
@@ -598,6 +599,17 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 		}
 		if order.Status != common.TopUpStatusPending {
 			return ErrSubscriptionOrderStatusInvalid
+		}
+		snapshot := BillingSubjectSnapshot{
+			Type:         order.BillingSubjectType,
+			SubjectID:    order.BillingSubjectId,
+			EnterpriseID: order.BillingEnterpriseId,
+		}
+		if snapshot.Type == BillingSubjectTypeEnterprise {
+			return ErrEnterpriseSubscriptionUnsupported
+		}
+		if !snapshot.Valid() || snapshot.Type != BillingSubjectTypePersonal || snapshot.SubjectID != order.UserId {
+			return ErrBillingSubjectInvalid
 		}
 		plan, err := GetSubscriptionPlanById(order.PlanId)
 		if err != nil {
