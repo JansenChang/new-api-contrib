@@ -422,7 +422,7 @@ func TestEnterpriseLedgerReversalRestoresAvailableBalancesByKind(t *testing.T) {
 			var original EnterpriseLedger
 			require.NoError(t, DB.First(&original, originalResult.LedgerID).Error)
 
-			reversal := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindReversal, "reverse-"+tt.name, "reverse-"+tt.name, original.Amount)
+			reversal := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindReversal, "reversal-"+tt.name, "reversal-"+tt.name, original.Amount)
 			reversal.ReversesLedgerID = original.Id
 			reversed, err := ReverseEnterpriseLedger(reversal)
 			require.NoError(t, err)
