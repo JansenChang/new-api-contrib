@@ -1,12 +1,39 @@
 package postgresmigration
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+const expectedSQLite34SignatureSHA256 = "a307c47470b78e8b4f540c580994db2870970fcd57113a877e7a11e221ec8f17"
+
+var baselineSourceTableNames = []string{
+	"abilities", "auth_flows", "authz_roles", "casbin_rule", "channels", "checkins",
+	"custom_oauth_providers", "external_identity_claims", "logs", "midjourneys", "models",
+	"options", "passkey_credentials", "perf_metrics", "prefill_groups", "quota_data",
+	"redemptions", "setups", "subscription_orders", "subscription_plans",
+	"subscription_pre_consume_records", "system_instances", "system_task_locks", "system_tasks",
+	"tasks", "tokens", "top_ups", "two_fa_backup_codes", "two_fas", "user_oauth_bindings",
+	"user_sessions", "user_subscriptions", "users", "vendors",
+}
+
+var baselineTargetTableNames = []string{
+	"abilities", "auth_flows", "authz_roles", "casbin_rule", "channels", "checkins",
+	"custom_oauth_providers", "external_identity_claims", "logs", "midjourneys", "models",
+	"options", "passkey_credentials", "perf_metrics", "prefill_groups", "quota_data",
+	"redemptions", "setups", "subscription_orders", "subscription_plans",
+	"subscription_pre_consume_records", "system_instances", "system_task_locks", "system_tasks",
+	"tasks", "tokens", "top_ups", "two_fa_backup_codes", "two_fas", "user_oauth_bindings",
+	"user_sessions", "user_subscriptions", "users", "vendors", "api_key_deliveries",
+	"enterprises", "enterprise_memberships", "enterprise_invitations", "enterprise_ledgers",
+	"enterprise_usage_records",
+}
 
 func validManifest() Manifest {
 	return Manifest{
@@ -24,8 +51,16 @@ func validManifest() Manifest {
 
 func source34() SchemaSnapshot {
 	p := SQLite34PreEnterprise()
-	s := SchemaSnapshot{Tables: make(map[string]TableSnapshot, len(p.SourceTables))}
+	s := SchemaSnapshot{Tables: make(map[string]TableSnapshot, len(baselineSourceTableNames))}
+	specs := make(map[string]TableSpec, len(p.SourceSpecs))
 	for _, spec := range p.SourceSpecs {
+		specs[spec.Name] = spec
+	}
+	for _, name := range baselineSourceTableNames {
+		spec, ok := specs[name]
+		if !ok {
+			panic("static baseline table missing from profile: " + name)
+		}
 		columns := make([]ColumnMetadata, len(spec.Columns))
 		for i, column := range spec.Columns {
 			columns[i] = ColumnMetadata{Name: column.Name, SQLiteType: column.SQLiteType, NotNull: column.NotNull, PKOrder: column.PKOrder}
@@ -37,6 +72,38 @@ func source34() SchemaSnapshot {
 		s.Tables[spec.Name] = TableSnapshot{Columns: columns, Indexes: indexes, RowCount: 1}
 	}
 	return s
+}
+
+func TestPostgresPrimaryMigrationSQLite34StaticBaseline(t *testing.T) {
+	profile := SQLite34PreEnterprise()
+	require.Equal(t, baselineSourceTableNames, profile.SourceTables)
+	require.Equal(t, baselineTargetTableNames, profile.TargetTables)
+	assert.Equal(t, expectedSQLite34SignatureSHA256, sqlite34SignatureFingerprint(profile))
+}
+
+func sqlite34SignatureFingerprint(profile Profile) string {
+	lines := make([]string, 0, len(profile.SourceSpecs))
+	for _, spec := range profile.SourceSpecs {
+		columns := make([]string, len(spec.Columns))
+		for i, column := range spec.Columns {
+			notNull := "nn0"
+			if column.NotNull {
+				notNull = "nn1"
+			}
+			columns[i] = fmt.Sprintf("%s:%s:%s:pk%d", column.Name, column.SQLiteType, notNull, column.PKOrder)
+		}
+		indexes := make([]string, len(spec.Indexes))
+		for i, index := range spec.Indexes {
+			unique := "u0"
+			if index.Unique {
+				unique = "u1"
+			}
+			indexes[i] = fmt.Sprintf("%s[%s,%s]:%s", index.Name, unique, index.Origin, strings.Join(index.Columns, ","))
+		}
+		lines = append(lines, fmt.Sprintf("%s|%s|%s", spec.Name, strings.Join(columns, ";"), strings.Join(indexes, ";")))
+	}
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func TestPostgresPrimaryMigrationPreflightAcceptsSQLite34Metadata(t *testing.T) {

@@ -123,17 +123,6 @@ type Profile struct {
 	SourceSpecs  []TableSpec
 }
 
-var sqlite34SourceTables = []string{
-	"abilities", "auth_flows", "authz_roles", "casbin_rule", "channels",
-	"checkins", "custom_oauth_providers", "external_identity_claims", "logs",
-	"midjourneys", "models", "options", "passkey_credentials", "perf_metrics",
-	"prefill_groups", "quota_data", "redemptions", "setups", "subscription_plans",
-	"subscription_pre_consume_records", "system_instances", "system_task_locks",
-	"system_tasks", "tasks", "tokens", "two_fa_backup_codes", "two_fas",
-	"user_oauth_bindings", "user_sessions", "user_subscriptions", "vendors", "users",
-	"top_ups", "subscription_orders",
-}
-
 // SQLite34PreEnterprise returns a copy of the fixed table allowlist. Callers
 // cannot mutate the package-level profile by changing the returned slices.
 func SQLite34PreEnterprise() Profile {
