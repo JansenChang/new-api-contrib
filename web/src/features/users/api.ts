@@ -138,6 +138,15 @@ export async function manageUser(
   return res.data
 }
 
+/** Set a common user as an enterprise owner without changing platform role. */
+export async function setEnterpriseAdmin(id: number): Promise<ApiResponse> {
+  const res = await api.post(`/api/user/${id}/enterprise-admin`, undefined, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
+  return res.data
+}
+
 /**
  * Adjust user quota atomically (add/subtract/override)
  */
