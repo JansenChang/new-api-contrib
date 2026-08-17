@@ -1,6 +1,6 @@
 # Admin 受限站点设置：后端切片执行计划
 
-状态：IMPLEMENTED（待受控整合）
+状态：INTEGRATED（运行测试待补证据）
 
 负责人：Codex
 
@@ -54,4 +54,5 @@ git diff --check
 - `model.UpdateOption` 现在先确认数据库持久化成功，才发布 `OptionMap`；单项和批量写入用同一低频锁串行，避免数据库与进程内配置倒挂。
 - 独立安全复审无阻塞 P1；未发现完整渠道 Key、白名单外配置值或审计值泄露路径。建议后续补充数据库写入失败、单项/批量并发一致性的 P2 回归。
 - `git diff --check` 已通过。定向 `go test ./controller -run 'Test(SiteOption|GetSiteOptions|UpdateSiteOption)' -count=1` 连续两次被本机 Go 工具进程向外部遥测地址建立连接而挂起，已停止残留进程；依 `loop-constraints.md` 暂停继续重试，测试结果为 `NOT_RUN`。
+- 2026-08-17：在用户授权后，以 `7c86cfc84` 提交并通过 `9edfc6bd8` 整合至主分支；未部署。
 - 前端仍调用 Root-only `/api/option`。在本后端切片通过、合并后另起前端切片接入 `/api/option/site`，不在本片跨越 10 个既有源码文件上限。
