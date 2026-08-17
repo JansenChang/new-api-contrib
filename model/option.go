@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -21,6 +22,9 @@ type Option struct {
 	Key   string `json:"key" gorm:"primaryKey"`
 	Value string `json:"value"`
 }
+
+// ponytail: low-frequency global lock; use per-key locks only if option writes become a bottleneck.
+var optionUpdateMutex sync.Mutex
 
 func AllOption() ([]*Option, error) {
 	var options []*Option
@@ -302,17 +306,23 @@ func UpdateOption(key string, value string) error {
 	if err := validateOptionValue(key, value); err != nil {
 		return err
 	}
+	optionUpdateMutex.Lock()
+	defer optionUpdateMutex.Unlock()
 	// Save to database first
 	option := Option{
 		Key: key,
 	}
 	// https://gorm.io/docs/update.html#Save-All-Fields
-	DB.FirstOrCreate(&option, Option{Key: key})
+	if err := DB.FirstOrCreate(&option, Option{Key: key}).Error; err != nil {
+		return err
+	}
 	option.Value = value
 	// Save is a combination function.
 	// If save value does not contain primary key, it will execute Create,
 	// otherwise it will execute Update (with all fields).
-	DB.Save(&option)
+	if err := DB.Save(&option).Error; err != nil {
+		return err
+	}
 	// Update OptionMap
 	return updateOptionMap(key, value)
 }
@@ -331,6 +341,8 @@ func UpdateOptionsBulk(values map[string]string) error {
 			return err
 		}
 	}
+	optionUpdateMutex.Lock()
+	defer optionUpdateMutex.Unlock()
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		for k, v := range values {
 			option := Option{Key: k}

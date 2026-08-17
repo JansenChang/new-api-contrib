@@ -30,6 +30,79 @@ var completionRatioMetaOptionKeys = []string{
 	"AudioCompletionRatio",
 }
 
+var adminSiteOptionKeys = []string{
+	"SystemName",
+	"Logo",
+	"Footer",
+	"About",
+	"HomePageContent",
+	"Notice",
+	"legal.user_agreement",
+	"legal.privacy_policy",
+	"HeaderNavModules",
+	"SidebarModulesAdmin",
+}
+
+func isAdminSiteOptionKey(key string) bool {
+	for _, allowedKey := range adminSiteOptionKeys {
+		if key == allowedKey {
+			return true
+		}
+	}
+	return false
+}
+
+func GetAdminSiteOptions(c *gin.Context) {
+	options := make([]*model.Option, 0, len(adminSiteOptionKeys))
+	common.OptionMapRWMutex.RLock()
+	for _, key := range adminSiteOptionKeys {
+		if value, ok := common.OptionMap[key]; ok {
+			options = append(options, &model.Option{Key: key, Value: common.Interface2String(value)})
+		}
+	}
+	common.OptionMapRWMutex.RUnlock()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    options,
+	})
+}
+
+func UpdateAdminSiteOption(c *gin.Context) {
+	var option OptionUpdateRequest
+	if err := common.DecodeJson(c.Request.Body, &option); err != nil {
+		common.ApiErrorMsg(c, "无效的参数")
+		return
+	}
+	if !isAdminSiteOptionKey(option.Key) {
+		common.ApiErrorMsg(c, "该配置项不允许通过站点设置接口修改")
+		return
+	}
+	value, ok := option.Value.(string)
+	if !ok {
+		common.ApiErrorMsg(c, "站点配置值必须为字符串")
+		return
+	}
+	if option.Key == "HeaderNavModules" || option.Key == "SidebarModulesAdmin" {
+		var modules map[string]any
+		if err := common.UnmarshalJsonStr(value, &modules); err != nil || modules == nil {
+			common.ApiErrorMsg(c, "导航配置必须为 JSON 对象")
+			return
+		}
+	}
+	if err := model.UpdateOption(option.Key, value); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "option.update", map[string]interface{}{
+		"key": option.Key,
+	})
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+	})
+}
+
 func isPaymentComplianceOptionKey(key string) bool {
 	return strings.HasPrefix(key, "payment_setting.compliance_")
 }
