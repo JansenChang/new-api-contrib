@@ -397,11 +397,11 @@ func executeEnterpriseMoneyOn(db *gorm.DB, cmd EnterpriseMoneyCommand, kind stri
 					}
 				}
 				if original.EnterpriseAvailableDelta < 0 {
-					if err := updateEnterpriseAvailable(tx, &enterprise, -original.EnterpriseAvailableDelta, true); err != nil {
+					if err := updateEnterpriseAvailable(tx, &enterprise, -original.EnterpriseAvailableDelta, false); err != nil {
 						return err
 					}
 				} else if original.EnterpriseAvailableDelta > 0 {
-					if err := updateEnterpriseAvailable(tx, &enterprise, original.EnterpriseAvailableDelta, false); err != nil {
+					if err := updateEnterpriseAvailable(tx, &enterprise, original.EnterpriseAvailableDelta, true); err != nil {
 						return err
 					}
 				}

@@ -349,6 +349,210 @@ func TestEnterpriseLedgerAdjustmentAndReversalGuards(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEnterpriseIdempotencyConflict)
 }
 
+func TestEnterpriseLedgerReversalRestoresAvailableBalancesByKind(t *testing.T) {
+	tests := []struct {
+		name               string
+		prepare            func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult
+		expectedEnterprise int
+		expectedMember     int
+	}{
+		{
+			name: "topup",
+			prepare: func(t *testing.T, enterprise *Enterprise, _ *EnterpriseMembership) EnterpriseMoneyResult {
+				result, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "reverse-topup", "reverse-topup", 100))
+				require.NoError(t, err)
+				return result
+			},
+		},
+		{
+			name: "adjustment credit",
+			prepare: func(t *testing.T, enterprise *Enterprise, _ *EnterpriseMembership) EnterpriseMoneyResult {
+				command := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindAdjustment, "reverse-credit", "reverse-credit", 100)
+				command.AdjustmentDirection = "credit"
+				result, err := AdjustEnterpriseQuota(command)
+				require.NoError(t, err)
+				return result
+			},
+		},
+		{
+			name: "adjustment debit",
+			prepare: func(t *testing.T, enterprise *Enterprise, _ *EnterpriseMembership) EnterpriseMoneyResult {
+				_, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "reverse-debit-topup", "reverse-debit-topup", 100))
+				require.NoError(t, err)
+				command := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindAdjustment, "reverse-debit", "reverse-debit", 30)
+				command.AdjustmentDirection = "debit"
+				result, err := AdjustEnterpriseQuota(command)
+				require.NoError(t, err)
+				return result
+			},
+			expectedEnterprise: 100,
+		},
+		{
+			name: "allocate",
+			prepare: func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult {
+				_, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "reverse-allocate-topup", "reverse-allocate-topup", 100))
+				require.NoError(t, err)
+				result, err := AllocateEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindAllocate, "reverse-allocate", "reverse-allocate", 40))
+				require.NoError(t, err)
+				return result
+			},
+			expectedEnterprise: 100,
+		},
+		{
+			name: "reclaim",
+			prepare: func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult {
+				_, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "reverse-reclaim-topup", "reverse-reclaim-topup", 100))
+				require.NoError(t, err)
+				_, err = AllocateEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindAllocate, "reverse-reclaim-allocate", "reverse-reclaim-allocate", 40))
+				require.NoError(t, err)
+				result, err := ReclaimEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindReclaim, "reverse-reclaim", "reverse-reclaim", 20))
+				require.NoError(t, err)
+				return result
+			},
+			expectedEnterprise: 60,
+			expectedMember:     40,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newEnterpriseLedgerTestDB(t)
+			enterprise, member := enterpriseLedgerFixture(t)
+			originalResult := tt.prepare(t, enterprise, member)
+			var original EnterpriseLedger
+			require.NoError(t, DB.First(&original, originalResult.LedgerID).Error)
+
+			reversal := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindReversal, "reverse-"+tt.name, "reverse-"+tt.name, original.Amount)
+			reversal.ReversesLedgerID = original.Id
+			reversed, err := ReverseEnterpriseLedger(reversal)
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedEnterprise, reversed.EnterpriseAvailableQuota)
+			assert.Equal(t, tt.expectedMember, reversed.MemberAvailableQuota)
+
+			var reversalLedger EnterpriseLedger
+			require.NoError(t, DB.First(&reversalLedger, reversed.LedgerID).Error)
+			assert.Equal(t, -original.EnterpriseAvailableDelta, reversalLedger.EnterpriseAvailableDelta)
+			assert.Equal(t, -original.MemberAvailableDelta, reversalLedger.MemberAvailableDelta)
+
+			replayed, err := ReverseEnterpriseLedger(reversal)
+			require.NoError(t, err)
+			assert.True(t, replayed.Replayed)
+			assert.Equal(t, reversed.LedgerID, replayed.LedgerID)
+
+			assertEnterpriseLedgerAvailableBalances(t, enterprise.Id, member.Id)
+		})
+	}
+}
+
+func TestEnterpriseLedgerReversalInsufficientQuotaDoesNotWrite(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult
+	}{
+		{
+			name: "topup",
+			prepare: func(t *testing.T, enterprise *Enterprise, _ *EnterpriseMembership) EnterpriseMoneyResult {
+				original, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "insufficient-topup", "insufficient-topup", 100))
+				require.NoError(t, err)
+				debit := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindAdjustment, "insufficient-topup-debit", "insufficient-topup-debit", 100)
+				debit.AdjustmentDirection = "debit"
+				_, err = AdjustEnterpriseQuota(debit)
+				require.NoError(t, err)
+				return original
+			},
+		},
+		{
+			name: "adjustment credit",
+			prepare: func(t *testing.T, enterprise *Enterprise, _ *EnterpriseMembership) EnterpriseMoneyResult {
+				credit := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindAdjustment, "insufficient-credit", "insufficient-credit", 100)
+				credit.AdjustmentDirection = "credit"
+				original, err := AdjustEnterpriseQuota(credit)
+				require.NoError(t, err)
+				debit := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindAdjustment, "insufficient-credit-debit", "insufficient-credit-debit", 100)
+				debit.AdjustmentDirection = "debit"
+				_, err = AdjustEnterpriseQuota(debit)
+				require.NoError(t, err)
+				return original
+			},
+		},
+		{
+			name: "allocate",
+			prepare: func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult {
+				_, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "insufficient-allocate-topup", "insufficient-allocate-topup", 100))
+				require.NoError(t, err)
+				original, err := AllocateEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindAllocate, "insufficient-allocate", "insufficient-allocate", 40))
+				require.NoError(t, err)
+				_, err = ReclaimEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindReclaim, "insufficient-allocate-reclaim", "insufficient-allocate-reclaim", 40))
+				require.NoError(t, err)
+				return original
+			},
+		},
+		{
+			name: "reclaim",
+			prepare: func(t *testing.T, enterprise *Enterprise, member *EnterpriseMembership) EnterpriseMoneyResult {
+				_, err := CreditEnterpriseWallet(enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindTopUp, "insufficient-reclaim-topup", "insufficient-reclaim-topup", 100))
+				require.NoError(t, err)
+				_, err = AllocateEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindAllocate, "insufficient-reclaim-allocate", "insufficient-reclaim-allocate", 40))
+				require.NoError(t, err)
+				original, err := ReclaimEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindReclaim, "insufficient-reclaim", "insufficient-reclaim", 20))
+				require.NoError(t, err)
+				_, err = AllocateEnterpriseQuota(enterpriseMoneyCommand(enterprise.Id, member.Id, EnterpriseLedgerKindAllocate, "insufficient-reclaim-drain", "insufficient-reclaim-drain", 80))
+				require.NoError(t, err)
+				return original
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			newEnterpriseLedgerTestDB(t)
+			enterprise, member := enterpriseLedgerFixture(t)
+			originalResult := tt.prepare(t, enterprise, member)
+			var original EnterpriseLedger
+			require.NoError(t, DB.First(&original, originalResult.LedgerID).Error)
+
+			var beforeEnterprise Enterprise
+			var beforeMember EnterpriseMembership
+			require.NoError(t, DB.First(&beforeEnterprise, enterprise.Id).Error)
+			require.NoError(t, DB.First(&beforeMember, member.Id).Error)
+			reversal := enterpriseMoneyCommand(enterprise.Id, 0, EnterpriseLedgerKindReversal, "insufficient-reverse-"+tt.name, "insufficient-reverse-"+tt.name, original.Amount)
+			reversal.ReversesLedgerID = original.Id
+			_, err := ReverseEnterpriseLedger(reversal)
+			require.ErrorIs(t, err, ErrEnterpriseInsufficientQuota)
+
+			var afterEnterprise Enterprise
+			var afterMember EnterpriseMembership
+			require.NoError(t, DB.First(&afterEnterprise, enterprise.Id).Error)
+			require.NoError(t, DB.First(&afterMember, member.Id).Error)
+			assert.Equal(t, beforeEnterprise.AvailableQuota, afterEnterprise.AvailableQuota)
+			assert.Equal(t, beforeMember.AvailableQuota, afterMember.AvailableQuota)
+			var reversalCount int64
+			require.NoError(t, DB.Model(&EnterpriseLedger{}).Where("enterprise_id = ? AND idempotency_key = ?", enterprise.Id, reversal.IdempotencyKey).Count(&reversalCount).Error)
+			assert.Zero(t, reversalCount)
+			assertEnterpriseLedgerAvailableBalances(t, enterprise.Id, member.Id)
+		})
+	}
+}
+
+func assertEnterpriseLedgerAvailableBalances(t *testing.T, enterpriseID, memberID int) {
+	t.Helper()
+	var ledgers []EnterpriseLedger
+	require.NoError(t, DB.Where("enterprise_id = ?", enterpriseID).Find(&ledgers).Error)
+	var enterpriseDelta, memberDelta int
+	for _, ledger := range ledgers {
+		enterpriseDelta += ledger.EnterpriseAvailableDelta
+		if ledger.MembershipId != nil && *ledger.MembershipId == memberID {
+			memberDelta += ledger.MemberAvailableDelta
+		}
+	}
+	var enterprise Enterprise
+	var member EnterpriseMembership
+	require.NoError(t, DB.First(&enterprise, enterpriseID).Error)
+	require.NoError(t, DB.First(&member, memberID).Error)
+	assert.Equal(t, enterpriseDelta, enterprise.AvailableQuota)
+	assert.Equal(t, memberDelta, member.AvailableQuota)
+}
+
 func TestBillingSubjectSnapshotsCannotChangeAfterCreation(t *testing.T) {
 	newEnterpriseLedgerTestDB(t)
 	topup := &TopUp{UserId: 501, Amount: 10, TradeNo: "immutable-topup"}

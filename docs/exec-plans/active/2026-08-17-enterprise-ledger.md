@@ -1,5 +1,5 @@
 # 企业账本内核切片 C
-状态：INTEGRATED（多数据库、支付回调与 UAT 验证待完成）
+状态：INTEGRATED（冲正方向已修复；多数据库、支付回调与 UAT 验证待完成）
 负责人：Codex
 更新时间：2026-08-17
 
@@ -40,6 +40,21 @@
 3. 添加余额非负、事务回滚、重复请求和冲突测试，以及企业 TopUp 结算、快照 map 更新拒绝、正常订单状态/金额更新和镜像 PaymentProvider 一致性测试。
 4. 运行定向 SQLite 测试与静态兼容检查，回写结果和 NOT_RUN 边界。并发测试通过测试专用屏障让两个首次幂等读取同时发生，验证一创建、一重放、单账本和单次余额变更。
 
+## 冲正方向修复增补（2026-08-17）
+
+### 已确认事实与范围
+
+`updateEnterpriseAvailable` 的第三个参数为 `subtract`：`false` 为回加，`true` 为扣减；`updateMemberAvailable` 的第三个参数为 `add`：`true` 为回加，`false` 为扣减。复核现有代码后确认：企业可用余额分支错误地按原账本方向传入参数；成员可用余额分支已经按相反方向传入，不能反向修改。此次为成员 `ALLOCATE`/`RECLAIM` 冲正补足回归用例，防止后续将 `add` 参数语义误改。
+
+本次仅修复可冲正的 `TOPUP`、`ALLOCATE`、`RECLAIM`、`ADJUSTMENT` 对应的可用余额方向；不扩展 `RESERVE`、`SETTLE`、`REFUND`、`ANOMALY` 的冲正范围，不改变账本追加写入、权限、幂等、引用唯一性或公开接口。
+
+### 验收条件
+
+1. 原账本的企业可用余额 delta 为负时，`REVERSAL` 必须回加该额度；为正时，必须扣减该额度且余额不足时整个事务失败。
+2. 原账本的成员可用余额 delta 为负时，`REVERSAL` 必须回加该额度；为正时，必须扣减该额度且余额不足时整个事务失败。
+3. 每个可冲正动作均须验证：汇总余额等于原动作前的余额、冲正行 delta 等于原行 delta 的相反数、相同幂等键仅返回同一冲正行。
+4. 余额不足的冲正不得写入 `REVERSAL` 行，也不得改变任何企业或成员汇总余额。
+
 ## 验证命令与通过条件
 
 - `go test ./model -run 'TestEnterpriseLedger' -count=1`：新增模型行为测试通过。
@@ -49,4 +64,11 @@
 
 ## 结果与未解决项
 
-已完成内部企业 TopUp 结算与订单快照不变量修复；该内部入口只接收已标准化的额度，C2 必须完成支付商换算后才能调用。订阅 TopUp 镜像仅复制/校验主体快照和 PaymentProvider，未改变支付回调主体分派，后者仍为 C2。`gofmt` 与 `git diff --check` 通过。定向 `go test ./model -run 'EnterpriseLedger|BillingSubject' -count=1` 已启动但在本机 Go 工具链遥测/构建阶段无输出，手动终止，记为 `NOT_RUN`；未进行第二次重试。MySQL/PostgreSQL、支付回调和 UAT 仍为 `NOT_RUN`。代码已在人工授权后以 `d94426c56` 整合至主分支，未部署。
+已完成内部企业 TopUp 结算与订单快照不变量修复；该内部入口只接收已标准化的额度，C2 必须完成支付商换算后才能调用。订阅 TopUp 镜像仅复制/校验主体快照和 PaymentProvider，未改变支付回调主体分派，后者仍为 C2。`gofmt` 与 `git diff --check` 通过。定向 `go test ./model -run 'EnterpriseLedger|BillingSubject' -count=1` 已启动但在本机 Go 工具链遥测/构建阶段无输出，手动终止，记为 `NOT_RUN`；未进行第二次重试。MySQL/PostgreSQL、支付回调和 UAT 仍为 `NOT_RUN`，且未提交或部署。
+
+### 冲正方向修复结果（2026-08-17）
+
+- 已最小修复企业可用余额的 `REVERSAL` 参数方向：原企业 delta 为负时回加，为正时扣减；冲正账本仍写入原 delta 的相反数。
+- 成员可用余额函数的 `add=true` 才是回加、`add=false` 才是扣减；现有成员冲正方向已正确，本次未反向修改，只增加 `ALLOCATE`/`RECLAIM` 回归约束。
+- 新增确定性 SQLite 回归覆盖 `TOPUP`、`ADJUSTMENT credit`、`ADJUSTMENT debit`、`ALLOCATE`、`RECLAIM` 的冲正余额、账本 delta、幂等重放和账本累计一致性；另覆盖所有会在冲正时扣减余额的动作余额不足时事务回滚且不写 `REVERSAL` 行。
+- `gofmt` 与 `git diff --check` 通过。定向 SQLite 测试结果将在本次主分支验证后回填；MySQL/PostgreSQL、支付回调和 UAT 仍为 `NOT_RUN`。
