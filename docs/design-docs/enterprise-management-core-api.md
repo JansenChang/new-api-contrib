@@ -1,8 +1,8 @@
 # 企业管理核心 API（切片 H1）技术设计
 
-**Author:** Codex  
-**Date:** 2026-08-17  
-**Status:** APPROVED（仅限本切片；发布门默认关闭）  
+**Author:** Codex
+**Date:** 2026-08-17
+**Status:** APPROVED（仅限本切片；发布门默认关闭）
 **Review basis:** 已确认的企业角色、企业钱包、成员额度与移除边界；H 的既有 DRAFT 设计。
 
 关联：[企业账户、角色、计费与 API Key 产品规格](../product-specs/enterprise-accounts-and-billing.md)、[企业账户与计费设计](enterprise-accounts-and-billing.md)、[企业管理 API（完整后续范围）](enterprise-management-api.md)。
@@ -37,7 +37,7 @@ Owner 的分配/回收接口 MUST 分别调用 `AllocateEnterpriseQuota` / `Recl
 
 - FR-6: 资金幂等
 
-分配/回收 MUST 要求长度为 1 至 128 的 `Idempotency-Key`。服务端以 `(enterprise_id, operation, key)` 构建稳定账本命令；同键同请求返回原账本结果并标记 `replayed=true`，同键改变成员、金额或操作返回 `ENTERPRISE_IDEMPOTENCY_CONFLICT`，不写第二笔流水。原始 header 值不得进入日志或审计。
+分配/回收 MUST 要求长度为 1 至 128 的 `Idempotency-Key`。服务端以 `(enterprise_id, key)` 构建稳定账本命令；同键同请求返回原账本结果并标记 `replayed=true`，同键改变成员、金额或操作返回 `ENTERPRISE_IDEMPOTENCY_CONFLICT`，不写第二笔流水。原始 header 值不得进入日志或审计。
 
 - FR-7: 成员状态
 

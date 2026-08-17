@@ -44,12 +44,12 @@ func TestEnterpriseOwnerLifecycleAllowsNonOwnerMemberAndUnrelatedUser(t *testing
 		EnterpriseId: enterprise.Id,
 		UserId:       member.Id,
 		Role:         EnterpriseMembershipRoleMember,
-		Status:       EnterpriseMembershipStatusRemoved,
+		Status:       EnterpriseMembershipStatusActive,
 	}
 	require.NoError(t, DB.Create(&removed).Error)
 
-	// A removed Member relationship does not make the user an enterprise
-	// owner, so ordinary platform disablement remains available.
+	// A Member relationship does not make the user an enterprise owner, so
+	// ordinary platform disablement remains available.
 	member.Status = common.UserStatusDisabled
 	require.NoError(t, member.Update(false))
 	var savedMember User
@@ -73,6 +73,30 @@ func TestEnterpriseOwnerLifecycleAllowsNonOwnerMemberAndUnrelatedUser(t *testing
 	// The enterprise owner itself remains protected independently of the
 	// member operations above.
 	assert.ErrorIs(t, owner.Delete(), ErrEnterpriseOwnerLifecycleBlocked)
+}
+
+func TestEnterpriseMemberMustBeRemovedBeforeDeletion(t *testing.T) {
+	newEnterpriseMembershipTestDB(t)
+	require.NoError(t, DB.AutoMigrate(&UserSession{}))
+	oldRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = oldRedisEnabled })
+
+	_, enterprise := enterpriseMembershipOwner(t, "lifecycle-delete-owner", "lifecycle-delete-owner@example.com")
+	member := enterpriseMembershipUser(t, "lifecycle-delete-member", "lifecycle-delete-member@example.com")
+	membership := &EnterpriseMembership{EnterpriseId: enterprise.Id, UserId: member.Id, Role: EnterpriseMembershipRoleMember, Status: EnterpriseMembershipStatusActive}
+	require.NoError(t, DB.Create(membership).Error)
+
+	assert.ErrorIs(t, member.Delete(), ErrEnterpriseMembershipLifecycleBlocked)
+	assert.ErrorIs(t, (&User{Id: member.Id}).HardDelete(), ErrEnterpriseMembershipLifecycleBlocked)
+
+	require.NoError(t, DB.Model(membership).Update("status", EnterpriseMembershipStatusRemoved).Error)
+	require.NoError(t, member.Delete())
+
+	hardDeleteMember := enterpriseMembershipUser(t, "lifecycle-hard-delete-member", "lifecycle-hard-delete-member@example.com")
+	hardDeleteMembership := &EnterpriseMembership{EnterpriseId: enterprise.Id, UserId: hardDeleteMember.Id, Role: EnterpriseMembershipRoleMember, Status: EnterpriseMembershipStatusRemoved}
+	require.NoError(t, DB.Create(hardDeleteMembership).Error)
+	require.NoError(t, hardDeleteMember.HardDelete())
 }
 
 func TestEnterpriseOwnerLifecycleChecksOwnerAnchorAfterMembershipRemoval(t *testing.T) {

@@ -1,7 +1,7 @@
 # 企业管理核心 API（H1）执行计划
 
-状态：ACTIVE（代码与本地定向回归完成；等待隔离 UAT）
-负责人：Codex  
+状态：COMPLETED（隔离 UAT 与发布前审计完成；等待受控整合）
+负责人：Codex
 更新时间：2026-08-17
 
 关联设计：[企业管理核心 API（H1）](../../design-docs/enterprise-management-core-api.md)。
@@ -55,3 +55,5 @@ git diff --check
 - 基线验证：全量多包回归失败于既有 `controller/user_manage_test.go` 的会话撤销/同级权限断言；相同精确测试在未改动基线工作树 `codex/enterprise-management-core-spec` 亦失败，非本切片引入。完整 `./model` 亦存在既有单主 Key 测试失败，未据此修改无关行为。
 - 2026-08-17 隔离 UAT：已从提交 `b7657695d` 构建 `new-api-pg-uat:b7657695d`，仅替换 SSH `158` 的专用 `new-api-pg-uat-app` 容器；旧 UAT 容器以 `new-api-pg-uat-app-rollback-3b7d220b8` 保留为停止状态。新容器在既有专用 PostgreSQL、网络和 `/docker/new-api-pg-uat/runtime-data` 挂载上完成迁移并启动；容器内 `GET /api/status` 返回 `success:true`。未触碰生产容器、卷、网络、端口或配置。
 - `NOT_RUN`：MySQL 运行回归、打开门后的合成 Owner/Member UAT E2E、真实 SMTP/支付/前端、生产部署。企业发布门仍保持关闭；由于 UAT 网络为 internal bridge，主机 3002 端口不作为本次健康证据，改以容器内 HTTP 检查验证。
+- 发布前审计修复：管理额度命令的派生幂等键只基于原始 header 的摘要；同一 key 跨分配/回收会由 C1 拒绝，避免写入第二笔流水。用户软删/硬删会拒绝任何仍为非 `REMOVED` 的企业成员关系，必须先通过企业排空移除；平台禁用普通 Member 仍允许。
+- 审计结论：关闭门、三重 Owner 校验、跨企业投影与凭据脱敏未发现 P0/P1。Owner 管理审计尚未保证 request ID/enterprise ID 全量字段或拒绝分支留痕；FR-9 为 SHOULD，本切片不扩大范围，后续以定向审计测试补齐。

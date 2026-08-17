@@ -19,11 +19,13 @@ import (
 
 const UserNameMaxLength = 20
 
-// ErrEnterpriseOwnerLifecycleBlocked prevents disabling or deleting a user
-// while the user still anchors an enterprise. Ownership transfer/closure is
-// intentionally outside the current product slice, so refusing the
-// operation is safer than leaving an enterprise without an owner.
+// ErrEnterpriseOwnerLifecycleBlocked prevents disabling or deleting an
+// enterprise owner while ownership transfer/closure is unavailable.
 var ErrEnterpriseOwnerLifecycleBlocked = errors.New("enterprise owner cannot be disabled or deleted")
+
+// ErrEnterpriseMembershipLifecycleBlocked prevents deleting a user before
+// their enterprise relationship has been safely removed.
+var ErrEnterpriseMembershipLifecycleBlocked = errors.New("enterprise member must be removed before deletion")
 
 var userSortColumns = map[string]string{
 	"id":            "id",
@@ -992,7 +994,7 @@ func (user *User) Delete() error {
 	var nextAuthVersion int64
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
-		if err := guardEnterpriseOwnerLifecycleWithTx(tx, user.Id); err != nil {
+		if err := guardEnterpriseDeletionLifecycleWithTx(tx, user.Id); err != nil {
 			return err
 		}
 		nextAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
@@ -1089,6 +1091,26 @@ func guardEnterpriseOwnerLifecycleWithTx(tx *gorm.DB, userID int) error {
 		}
 	}
 	return nil
+}
+
+func guardEnterpriseDeletionLifecycleWithTx(tx *gorm.DB, userID int) error {
+	if err := guardEnterpriseOwnerLifecycleWithTx(tx, userID); err != nil {
+		return err
+	}
+	if !tx.Migrator().HasTable(&EnterpriseMembership{}) {
+		return nil
+	}
+	var membership EnterpriseMembership
+	err := lockForUpdate(tx).
+		Where("user_id = ? AND status <> ?", userID, EnterpriseMembershipStatusRemoved).
+		Select("id").First(&membership).Error
+	if err == nil {
+		return ErrEnterpriseMembershipLifecycleBlocked
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	return err
 }
 
 func deleteUserAuthenticationData(tx *gorm.DB, userId int) error {

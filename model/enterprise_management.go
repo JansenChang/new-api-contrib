@@ -157,9 +157,9 @@ func executeManagementQuotaCommand(actorUserID, membershipID, amount int, operat
 	if kind == EnterpriseLedgerKindReclaim && amount > member.AvailableQuota {
 		return result, ErrEnterpriseInsufficientQuota
 	}
-	managementDigest := enterpriseLedgerHash(operation+"\x00"+requestKey, 0)
-	commandKey := fmt.Sprintf("enterprise-management:%s:%s", operation, managementDigest)
-	referenceID := fmt.Sprintf("enterprise-management:%s:%s", operation, managementDigest)
+	managementDigest := enterpriseLedgerHash(requestKey, 0)
+	commandKey := fmt.Sprintf("enterprise-management:%s", managementDigest)
+	referenceID := fmt.Sprintf("enterprise-management:%s", managementDigest)
 	command := EnterpriseMoneyCommand{
 		EnterpriseID:   enterpriseID,
 		MembershipID:   membershipID,

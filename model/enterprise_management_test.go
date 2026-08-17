@@ -33,7 +33,7 @@ func TestSetEnterpriseOwnerCreatesOnlyEnterpriseRelationship(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEnterpriseMembershipConflict)
 }
 
-func TestEnterpriseManagementQuotaUsesC1AndReplaysByOperationKey(t *testing.T) {
+func TestEnterpriseManagementQuotaUsesC1AndReplaysByKey(t *testing.T) {
 	newEnterpriseLedgerTestDB(t)
 	enterprise, _ := enterpriseLedgerFixture(t)
 	owner := &User{}
@@ -56,6 +56,33 @@ func TestEnterpriseManagementQuotaUsesC1AndReplaysByOperationKey(t *testing.T) {
 	assert.ErrorIs(t, err, ErrEnterpriseIdempotencyConflict)
 	var count int64
 	require.NoError(t, DB.Model(&EnterpriseLedger{}).Where("enterprise_id = ? AND kind = ?", enterprise.Id, EnterpriseLedgerKindAllocate).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestEnterpriseManagementQuotaRejectsCrossOperationKeyReuse(t *testing.T) {
+	newEnterpriseLedgerTestDB(t)
+	enterprise, _ := enterpriseLedgerFixture(t)
+	owner := &User{}
+	require.NoError(t, DB.First(owner, enterprise.OwnerUserId).Error)
+	member := &EnterpriseMembership{EnterpriseId: enterprise.Id, UserId: 2003, Role: EnterpriseMembershipRoleMember, Status: EnterpriseMembershipStatusActive}
+	require.NoError(t, DB.Create(member).Error)
+	require.NoError(t, DB.Create(&User{Id: member.UserId, Username: "management-cross-operation-member", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}).Error)
+	_, err := CreditEnterpriseWallet(EnterpriseMoneyCommand{EnterpriseID: enterprise.Id, ActorUserID: owner.Id, Amount: 100, IdempotencyKey: "cross-operation-seed", ReferenceType: enterpriseLedgerReferenceTypes[EnterpriseLedgerKindTopUp], ReferenceID: "cross-operation-seed", RequestID: "cross-operation-seed"})
+	require.NoError(t, err)
+
+	_, err = AllocateEnterpriseQuotaForManagement(owner.Id, member.Id, 20, "allocate", "cross-operation-key")
+	require.NoError(t, err)
+	_, err = ReclaimEnterpriseQuotaForManagement(owner.Id, member.Id, 20, "reclaim", "cross-operation-key")
+	assert.ErrorIs(t, err, ErrEnterpriseIdempotencyConflict)
+
+	var enterpriseAfter Enterprise
+	require.NoError(t, DB.First(&enterpriseAfter, enterprise.Id).Error)
+	assert.Equal(t, 80, enterpriseAfter.AvailableQuota)
+	var memberAfter EnterpriseMembership
+	require.NoError(t, DB.First(&memberAfter, member.Id).Error)
+	assert.Equal(t, 20, memberAfter.AvailableQuota)
+	var count int64
+	require.NoError(t, DB.Model(&EnterpriseLedger{}).Where("enterprise_id = ? AND kind IN ?", enterprise.Id, []string{EnterpriseLedgerKindAllocate, EnterpriseLedgerKindReclaim}).Count(&count).Error)
 	assert.EqualValues(t, 1, count)
 }
 
