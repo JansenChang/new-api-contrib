@@ -18,7 +18,13 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import type { EnterpriseMember, EnterpriseSelf, Page } from './types'
+import type {
+  EnterpriseLedgerItem,
+  EnterpriseMember,
+  EnterpriseSelf,
+  EnterpriseUsageItem,
+  Page,
+} from './types'
 
 type Envelope<T> = {
   success: boolean
@@ -55,6 +61,36 @@ export async function getEnterpriseMembers(
 ): Promise<Page<EnterpriseMember>> {
   const response = await api.get<Envelope<Page<EnterpriseMember>>>(
     '/api/enterprise/members',
+    {
+      params: { p: page, page_size: pageSize },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return unwrap(response.data)
+}
+
+export async function getEnterpriseLedger(
+  page: number,
+  pageSize: number
+): Promise<Page<EnterpriseLedgerItem>> {
+  const response = await api.get<Envelope<Page<EnterpriseLedgerItem>>>(
+    '/api/enterprise/ledger',
+    {
+      params: { p: page, page_size: pageSize },
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
+  )
+  return unwrap(response.data)
+}
+
+export async function getEnterpriseUsage(
+  page: number,
+  pageSize: number
+): Promise<Page<EnterpriseUsageItem>> {
+  const response = await api.get<Envelope<Page<EnterpriseUsageItem>>>(
+    '/api/enterprise/usage',
     {
       params: { p: page, page_size: pageSize },
       skipBusinessError: true,

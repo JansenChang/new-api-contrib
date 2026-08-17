@@ -20,6 +20,8 @@ func TestEnterpriseManagementRoutesAreRegistered(t *testing.T) {
 		"POST /api/user/:id/enterprise-admin",
 		"GET /api/enterprise/self",
 		"GET /api/enterprise/members",
+		"GET /api/enterprise/ledger",
+		"GET /api/enterprise/usage",
 		"POST /api/enterprise/members/:id/allocations",
 		"POST /api/enterprise/members/:id/reclaims",
 		"POST /api/enterprise/members/:id/pause",

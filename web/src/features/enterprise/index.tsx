@@ -50,6 +50,7 @@ import {
   getEnterpriseMembers,
   getEnterpriseSelf,
 } from './api'
+import { EnterpriseReadPanels } from './ledger-usage'
 import type { EnterpriseError, EnterpriseMember } from './types'
 
 const queryKey = ['enterprise']
@@ -303,6 +304,7 @@ function EnterpriseContent() {
   const self = useQuery({
     queryKey: [...queryKey, 'self'],
     queryFn: getEnterpriseSelf,
+    enabled: !featureDisabled,
   })
   const members = useQuery({
     queryKey: [...queryKey, 'members', memberPage],
@@ -545,6 +547,13 @@ function EnterpriseContent() {
           </CardContent>
         </Card>
       )}
+
+      <EnterpriseReadPanels
+        isOwner={isOwner}
+        featureDisabled={featureDisabled}
+        errorText={(error) => errorMessage(error, t)}
+        onFeatureDisabled={closeFeature}
+      />
     </div>
   )
 }

@@ -24,6 +24,14 @@ func ListEnterpriseMembers(userID, offset, limit int) ([]model.EnterpriseMemberP
 	return model.ListEnterpriseMembers(userID, offset, limit)
 }
 
+func ListEnterpriseLedger(userID, offset, limit int) ([]model.EnterpriseLedgerItem, int64, error) {
+	return model.ListEnterpriseLedger(userID, offset, limit)
+}
+
+func ListEnterpriseUsage(userID, offset, limit int) ([]model.EnterpriseUsageItem, int64, error) {
+	return model.ListEnterpriseUsage(userID, offset, limit)
+}
+
 func GetEnterpriseMember(userID, membershipID int) (model.EnterpriseMemberProjection, error) {
 	return model.GetEnterpriseMemberProjection(userID, membershipID)
 }

@@ -64,3 +64,29 @@ export type Page<T> = {
 }
 
 export type EnterpriseError = Error & { code?: string }
+
+export type EnterpriseLedgerItem = {
+  id: number
+  kind: string
+  amount: number
+  enterprise_available_delta: number
+  enterprise_reserved_delta: number
+  member_available_delta: number
+  member_reserved_delta: number
+  created_at: number
+}
+
+export type EnterpriseUsageItem = {
+  id: number
+  model_name: string
+  funding_source: string
+  membership_role_snapshot: number
+  state: string
+  reserved_quota: number
+  settled_quota: number
+  refunded_quota: number
+  anomaly_quota: number
+  created_at: number
+  settled_at: number
+  refunded_at: number
+}

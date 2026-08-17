@@ -56,6 +56,41 @@ func ListEnterpriseMembers(c *gin.Context) {
 	common.ApiSuccess(c, page)
 }
 
+func ListEnterpriseLedger(c *gin.Context) {
+	page := enterpriseReadPage(c)
+	items, total, err := service.ListEnterpriseLedger(c.GetInt("id"), page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
+		writeEnterpriseError(c, err)
+		return
+	}
+	page.SetTotal(int(total))
+	page.SetItems(items)
+	common.ApiSuccess(c, page)
+}
+
+func ListEnterpriseUsage(c *gin.Context) {
+	page := enterpriseReadPage(c)
+	items, total, err := service.ListEnterpriseUsage(c.GetInt("id"), page.GetStartIdx(), page.GetPageSize())
+	if err != nil {
+		writeEnterpriseError(c, err)
+		return
+	}
+	page.SetTotal(int(total))
+	page.SetItems(items)
+	common.ApiSuccess(c, page)
+}
+
+func enterpriseReadPage(c *gin.Context) *common.PageInfo {
+	page := common.GetPageQuery(c)
+	if page.Page < 1 {
+		page.Page = 1
+	}
+	if page.PageSize <= 0 || page.PageSize > 100 {
+		page.PageSize = common.ItemsPerPage
+	}
+	return page
+}
+
 func AllocateEnterpriseQuota(c *gin.Context) {
 	writeEnterpriseQuotaChange(c, "allocate")
 }

@@ -164,6 +164,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			enterpriseRoute.GET("/self", controller.GetEnterpriseSelf)
 			enterpriseRoute.GET("/members", controller.ListEnterpriseMembers)
+			enterpriseRoute.GET("/ledger", controller.ListEnterpriseLedger)
+			enterpriseRoute.GET("/usage", controller.ListEnterpriseUsage)
 			enterpriseRoute.POST("/members/:id/allocations", controller.AllocateEnterpriseQuota)
 			enterpriseRoute.POST("/members/:id/reclaims", controller.ReclaimEnterpriseQuota)
 			enterpriseRoute.POST("/members/:id/pause", controller.PauseEnterpriseMember)
