@@ -108,7 +108,7 @@ N/A — 工具不注册 HTTP、Relay 或管理 API。后续 CLI 只接受受管 
 
 | 34 张来源表 | 目标处理 |
 | --- | --- |
-| `abilities`、`auth_flows`、`authz_roles`、`casbin_rules`、`channels`、`checkins`、`custom_oauth_providers`、`external_identity_claims`、`logs`、`midjourneys`、`models`、`options`、`passkey_credentials`、`perf_metrics`、`prefill_groups`、`quota_data`、`redemptions`、`setups`、`subscription_plans`、`subscription_pre_consume_records`、`system_instances`、`system_task_locks`、`system_tasks`、`tasks`、`tokens`、`two_fa_backup_codes`、`two_fas`、`user_oauth_bindings`、`user_sessions`、`user_subscriptions`、`vendors` | 每个旧列同名显式复制；不补值、不重算、不重新生成 ID/时间。 |
+| `abilities`、`auth_flows`、`authz_roles`、`casbin_rule`、`channels`、`checkins`、`custom_oauth_providers`、`external_identity_claims`、`logs`、`midjourneys`、`models`、`options`、`passkey_credentials`、`perf_metrics`、`prefill_groups`、`quota_data`、`redemptions`、`setups`、`subscription_plans`、`subscription_pre_consume_records`、`system_instances`、`system_task_locks`、`system_tasks`、`tasks`、`tokens`、`two_fa_backup_codes`、`two_fas`、`user_oauth_bindings`、`user_sessions`、`user_subscriptions`、`vendors` | 每个旧列同名显式复制；不补值、不重算、不重新生成 ID/时间。 |
 | `users` | 所有旧列同名显式复制；额外按下表填充 `active_enterprise_id`。 |
 | `top_ups` | 所有旧列同名显式复制；额外按下表填充 3 个支付主体快照列。 |
 | `subscription_orders` | 所有旧列同名显式复制；额外按下表填充 3 个支付主体快照列。 |
