@@ -22,3 +22,4 @@
 - `gofmt` 与 `git diff --check`：通过。定向 Go 测试在本机超过 30 秒仍无输出，已终止以避免环境阻塞，结果为 `NOT_RUN`；SQLite/MySQL/PostgreSQL、隔离 UAT、真实上游 Task 链路均为 `NOT_RUN`。
 
 - 2026-08-17：随 D 主切片以 `e7fadcff8` 提交，并由 `63df9d6d7` 受控整合；发布门保持关闭，未推送、未部署。
+- 2026-08-17：复跑企业 Task 定向测试时，发现测试期望值是无类型 `string`，而持久化字段稳定公开类型为 `model.TaskStatus`；仅将 3 处断言显式转换为 `TaskStatus`，并为同组普通用户夹具补充唯一 `AffCode`。`TestEnterpriseTaskDraftAndReserveAreAtomic`、人工成功/退款结案测试通过；未修改业务逻辑。更宽的企业 model/service 测试仍有既有夹具唯一约束、SQLite 并发/金额断言及上游轮询行为失败，未将其记为通过，待单独切片处理。

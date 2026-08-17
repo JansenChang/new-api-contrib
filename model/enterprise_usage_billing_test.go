@@ -186,7 +186,7 @@ func TestPlatformAdminCanResolveManualEnterpriseTaskAtomically(t *testing.T) {
 	require.NoError(t, DB.First(&savedTask, task.ID).Error)
 	require.NoError(t, DB.Where("reference_id = ?", fmt.Sprintf("usage:%d:%s", reserved.UsageID, EnterpriseLedgerKindSettle)).First(&ledger).Error)
 	assert.Equal(t, EnterpriseUsageStateSettled, usage.State)
-	assert.Equal(t, TaskStatusSuccess, savedTask.Status)
+	assert.Equal(t, TaskStatus(TaskStatusSuccess), savedTask.Status)
 	assert.Equal(t, enterprise.OwnerUserId, ledger.ActorUserId)
 	assert.Equal(t, "上游确认成功", ledger.Reason)
 }
@@ -206,7 +206,7 @@ func TestManualEnterpriseTaskRefundRequiresPlatformAdmin(t *testing.T) {
 	won, err := task.UpdateWithStatus(TaskStatusSubmitting)
 	require.NoError(t, err)
 	require.True(t, won)
-	require.NoError(t, DB.Create(&User{Id: 507, Username: "ordinary-user", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, DB.Create(&User{Id: 507, Username: "ordinary-user", AffCode: "ordinary-user-aff", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}).Error)
 
 	_, err = ResolveEnterpriseTaskManualReview(task.ID, 507, EnterpriseManualResolutionRefund, 0, "无权退款")
 	assert.ErrorIs(t, err, ErrEnterpriseOwnerRequired)
@@ -216,7 +216,7 @@ func TestManualEnterpriseTaskRefundRequiresPlatformAdmin(t *testing.T) {
 	assert.Equal(t, EnterpriseUsageStateRefunded, resolved.State)
 	var savedTask Task
 	require.NoError(t, DB.First(&savedTask, task.ID).Error)
-	assert.Equal(t, TaskStatusFailure, savedTask.Status)
+	assert.Equal(t, TaskStatus(TaskStatusFailure), savedTask.Status)
 }
 
 func TestEnterpriseUsageSnapshotsSelectedChannelBeforeSubmission(t *testing.T) {
@@ -252,7 +252,7 @@ func TestEnterpriseTaskDraftAndReserveAreAtomic(t *testing.T) {
 	assert.Equal(t, outcome.UsageID, task.PrivateData.EnterpriseUsageRecordId)
 	var saved Task
 	require.NoError(t, DB.First(&saved, task.ID).Error)
-	assert.Equal(t, TaskStatusSubmitting, saved.Status)
+	assert.Equal(t, TaskStatus(TaskStatusSubmitting), saved.Status)
 	assert.Equal(t, outcome.UsageID, saved.PrivateData.EnterpriseUsageRecordId)
 }
 
