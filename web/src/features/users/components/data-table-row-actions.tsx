@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { Row } from '@tanstack/react-table'
+import axios from 'axios'
 import {
   Pencil,
   Trash2,
@@ -28,6 +29,7 @@ import {
   ShieldAlert,
   Link2,
   CreditCard,
+  Building2,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -47,8 +49,15 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { UserSubscriptionsDialog } from '@/features/subscriptions/components/dialogs/user-subscriptions-dialog'
+import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
-import { manageUser, resetUserPasskey, resetUserTwoFA } from '../api'
+import {
+  manageUser,
+  resetUserPasskey,
+  resetUserTwoFA,
+  setEnterpriseAdmin,
+} from '../api'
 import {
   USER_STATUS,
   USER_ROLE,
@@ -68,10 +77,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation()
   const user = row.original
   const { setOpen, setCurrentRow, triggerRefresh } = useUsers()
+  const currentUser = useAuthStore((state) => state.auth.user)
   const [resetPasskeyOpen, setResetPasskeyOpen] = useState(false)
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false)
+  const [enterpriseAdminOpen, setEnterpriseAdminOpen] = useState(false)
+  const [enterpriseAdminLoading, setEnterpriseAdminLoading] = useState(false)
 
   const handleEdit = () => {
     setCurrentRow(user)
@@ -131,9 +143,35 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     }
   }
 
+  const handleSetEnterpriseAdmin = async () => {
+    setEnterpriseAdminLoading(true)
+    try {
+      const result = await setEnterpriseAdmin(user.id)
+      if (result.success) {
+        toast.success(t('Enterprise administrator set successfully'))
+        triggerRefresh()
+        setEnterpriseAdminOpen(false)
+      } else {
+        toast.error(
+          result.message || t('Failed to set enterprise administrator')
+        )
+      }
+    } catch (error) {
+      const message = axios.isAxiosError(error)
+        ? error.response?.data?.message || error.response?.data?.title
+        : undefined
+      toast.error(message || t(ERROR_MESSAGES.UNEXPECTED))
+    } finally {
+      setEnterpriseAdminLoading(false)
+    }
+  }
+
   const isDisabled = user.status === USER_STATUS.DISABLED
   const isAdmin = user.role >= USER_ROLE.ADMIN
   const isRoot = user.role === USER_ROLE.ROOT
+  const canSetEnterpriseAdmin =
+    (currentUser?.role ?? ROLE.USER) >= ROLE.ADMIN &&
+    user.role === USER_ROLE.USER
 
   if (isUserDeleted(user)) {
     return null
@@ -194,6 +232,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             {t('Promote')}
             <DropdownMenuShortcut>
               <ArrowUp size={16} />
+            </DropdownMenuShortcut>
+          </DropdownMenuItem>
+        )}
+
+        {canSetEnterpriseAdmin && (
+          <DropdownMenuItem
+            onSelect={(event) => {
+              event.preventDefault()
+              setEnterpriseAdminOpen(true)
+            }}
+          >
+            {t('Set as enterprise administrator')}
+            <DropdownMenuShortcut>
+              <Building2 size={16} />
             </DropdownMenuShortcut>
           </DropdownMenuItem>
         )}
@@ -274,6 +326,19 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         )}
         confirmText={t('Reset Passkey')}
         handleConfirm={handleResetPasskey}
+      />
+
+      <ConfirmDialog
+        open={enterpriseAdminOpen}
+        onOpenChange={setEnterpriseAdminOpen}
+        title={t('Set as enterprise administrator')}
+        desc={t(
+          'Set {{username}} as an enterprise administrator? Their platform role will remain User.',
+          { username: user.username }
+        )}
+        confirmText={t('Set as enterprise administrator')}
+        handleConfirm={handleSetEnterpriseAdmin}
+        isLoading={enterpriseAdminLoading}
       />
 
       <ConfirmDialog
