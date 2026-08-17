@@ -33,6 +33,7 @@ func setupManageUserTestDB(t *testing.T) *gorm.DB {
 	model.DB, model.LOG_DB = db, db
 	require.NoError(t, db.AutoMigrate(
 		&model.User{}, &model.UserSession{}, &model.Log{}, &model.CasbinRule{}, &model.AuthzRole{},
+		&model.Enterprise{}, &model.EnterpriseMembership{},
 	))
 
 	t.Cleanup(func() {
@@ -45,6 +46,30 @@ func setupManageUserTestDB(t *testing.T) *gorm.DB {
 		}
 	})
 	return db
+}
+
+func TestManageUserPromoteCreatesPlatformAdminEnterprise(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	user := model.User{
+		Username: "managed-promote-user", Password: "password", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	recorder := performManageUserRequest(t, fmt.Sprintf(`{"id":%d,"action":"promote"}`, user.Id))
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"success":true`)
+
+	var promoted model.User
+	require.NoError(t, db.First(&promoted, user.Id).Error)
+	assert.Equal(t, common.RoleAdminUser, promoted.Role)
+	assert.NotZero(t, promoted.ActiveEnterpriseId)
+	var enterprise model.Enterprise
+	require.NoError(t, db.First(&enterprise, promoted.ActiveEnterpriseId).Error)
+	assert.Equal(t, promoted.Id, enterprise.OwnerUserId)
+	var membership model.EnterpriseMembership
+	require.NoError(t, db.Where("enterprise_id = ? AND user_id = ?", enterprise.Id, promoted.Id).First(&membership).Error)
+	assert.Equal(t, model.EnterpriseMembershipRoleOwner, membership.Role)
 }
 
 func performManageUserRequest(t *testing.T, body string) *httptest.ResponseRecorder {

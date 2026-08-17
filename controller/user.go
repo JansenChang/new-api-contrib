@@ -1505,7 +1505,9 @@ func ManageUser(c *gin.Context) {
 			return
 		}
 	} else {
-		if err := user.Update(false); err != nil {
+		if err := model.DB.Transaction(func(tx *gorm.DB) error {
+			return user.UpdateWithTx(tx, false)
+		}); err != nil {
 			common.ApiError(c, err)
 			return
 		}
