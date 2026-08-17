@@ -48,7 +48,7 @@ func enterpriseLedgerFixtureForOwner(t *testing.T, ownerUserID int) (*Enterprise
 	t.Helper()
 	enterprise := &Enterprise{Name: "ledger-test", OwnerUserId: ownerUserID, Status: EnterpriseStatusActive}
 	require.NoError(t, DB.Create(enterprise).Error)
-	require.NoError(t, DB.Create(&User{Id: ownerUserID, Username: fmt.Sprintf("owner-%d", ownerUserID), Role: common.RoleAdminUser, Status: common.UserStatusEnabled}).Error)
+	require.NoError(t, DB.Create(&User{Id: ownerUserID, Username: fmt.Sprintf("owner-%d", ownerUserID), AffCode: fmt.Sprintf("owner-aff-%d", ownerUserID), Role: common.RoleAdminUser, Status: common.UserStatusEnabled}).Error)
 	require.NoError(t, DB.Create(&EnterpriseMembership{
 		EnterpriseId: enterprise.Id,
 		UserId:       enterprise.OwnerUserId,
@@ -327,7 +327,7 @@ func TestEnterpriseLedgerAdjustmentAndReversalGuards(t *testing.T) {
 	_, err = AdjustEnterpriseQuota(adjustment)
 	require.NoError(t, err)
 
-	ordinary := &User{Id: 404, Username: "ordinary-404", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
+	ordinary := &User{Id: 404, Username: "ordinary-404", AffCode: "ordinary-aff-404", Role: common.RoleCommonUser, Status: common.UserStatusEnabled}
 	require.NoError(t, DB.Create(ordinary).Error)
 	unauthorized := adjustment
 	unauthorized.IdempotencyKey = "guard-adjust-unauthorized"
