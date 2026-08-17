@@ -17,7 +17,7 @@
 - 当前候选的主库模型为 40 张 allowlist 表；已确认本次生产 SQLite 的 `logs` 与主库同文件，故 SQLite-34 profile 固定纳入 `logs`；其他源拓扑仍必须由 manifest 显式声明。
 - `migrateDB()` 不是纯 schema 建立器，带有运行期回填和企业补建；P-M2 不能复用它作为导入入口。
 - 新企业账本摘要的 PostgreSQL NUL 问题已修复；历史 NUL 行仍是失败关闭前置项。
-- SQLite-34 profile 已固定：34 张旧表必须按编译期 `TableSpec` 的列签名比较和显式复制；仅 `users.active_enterprise_id`、两张支付表的 6 个主体快照列以及 Root/Admin 衍生企业/Owner 关系由复制器确定性填充。`users.created_at=NULL` 固定映射为 `0`，不得取当前时间。
+- SQLite-34 profile 已固定：仅接受来源 SQLite、主库日志和候选 SHA `e451c93f1d44a1a84f9bab07937510458c8bd642`；34 张旧表必须按编译期 `TableSpec` 的列/索引签名比较和显式复制。仅 `users.active_enterprise_id`、两张支付表的 6 个主体快照列以及 Root/Admin 衍生企业/Owner 关系由复制器确定性填充。`users.created_at=NULL` 固定映射为 `0`，不得取当前时间。
 
 ## 实施顺序
 

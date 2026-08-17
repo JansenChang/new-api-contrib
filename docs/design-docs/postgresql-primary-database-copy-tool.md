@@ -104,6 +104,7 @@ N/A — 工具不注册 HTTP、Relay 或管理 API。后续 CLI 只接受受管 
 1. 源表名集合与下表 34 项完全相同；缺表、额外表、企业表或任一新增列都拒绝。
 2. 每张旧表只允许 profile 编译期 `TableSpec` 固化的旧列签名（列名、SQLite 声明类型、`notnull`、主键序位、目标类型/长度/精度、索引和 sequence 策略）；同名旧列按名称显式读取、显式写入，保留原主键、`NULL`、时间和所有既有值。SQLite metadata 仅验证这一签名，不能生成或扩大它。不得使用 `SELECT *`、目标默认值、运行时 `AutoMigrate` 回填或当前时间替代来源值。
 3. 仅本节列出的 7 个目标新增列可由 profile 受控填充；其余任何目标列差异均拒绝。预检失败时目标不得执行 DDL 或 DML。
+4. 此 profile 只接受 `source_type=sqlite`、`log_scope=primary` 和候选 SHA `e451c93f1d44a1a84f9bab07937510458c8bd642`；来源/目标身份哈希及快照证明标识均须非空，来源与目标身份哈希不得相同。MySQL、独立日志库或其他候选 SHA 必须新增独立审阅 profile，不能复用本 profile。
 
 | 34 张来源表 | 目标处理 |
 | --- | --- |
