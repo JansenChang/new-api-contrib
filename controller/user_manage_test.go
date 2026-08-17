@@ -61,6 +61,72 @@ func performManageUserRequest(t *testing.T, body string) *httptest.ResponseRecor
 	return recorder
 }
 
+func performDeleteUserRequest(t *testing.T, operatorRole int, targetID int) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/user/%d", targetID), nil)
+	c.AddParam("id", fmt.Sprintf("%d", targetID))
+	c.Set("id", 9999)
+	c.Set("role", operatorRole)
+	c.Set("username", "privileged-operator")
+	DeleteUser(c)
+	return recorder
+}
+
+func TestCanManageTargetRoleRejectsPrivilegedTargets(t *testing.T) {
+	tests := []struct {
+		name       string
+		operator   int
+		targetRole int
+		allowed    bool
+	}{
+		{name: "root manages user", operator: common.RoleRootUser, targetRole: common.RoleCommonUser, allowed: true},
+		{name: "admin manages user", operator: common.RoleAdminUser, targetRole: common.RoleCommonUser, allowed: true},
+		{name: "root cannot manage root", operator: common.RoleRootUser, targetRole: common.RoleRootUser},
+		{name: "root cannot manage admin", operator: common.RoleRootUser, targetRole: common.RoleAdminUser},
+		{name: "admin cannot manage root", operator: common.RoleAdminUser, targetRole: common.RoleRootUser},
+		{name: "admin cannot manage admin", operator: common.RoleAdminUser, targetRole: common.RoleAdminUser},
+		{name: "user cannot manage user", operator: common.RoleCommonUser, targetRole: common.RoleCommonUser},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.allowed, canManageTargetRole(tt.operator, tt.targetRole))
+		})
+	}
+}
+
+func TestDeleteUserRejectsPrivilegedTargets(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	tests := []struct {
+		name         string
+		operatorRole int
+		targetRole   int
+	}{
+		{name: "root to root", operatorRole: common.RoleRootUser, targetRole: common.RoleRootUser},
+		{name: "root to admin", operatorRole: common.RoleRootUser, targetRole: common.RoleAdminUser},
+		{name: "admin to root", operatorRole: common.RoleAdminUser, targetRole: common.RoleRootUser},
+		{name: "admin to admin", operatorRole: common.RoleAdminUser, targetRole: common.RoleAdminUser},
+	}
+	for index, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := model.User{
+				Username: fmt.Sprintf("delete-target-%s", strings.ReplaceAll(tt.name, " ", "-")), Password: "password",
+				Role: tt.targetRole, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+				AffCode: fmt.Sprintf("delete-target-aff-%d", index),
+			}
+			require.NoError(t, db.Create(&target).Error)
+
+			recorder := performDeleteUserRequest(t, tt.operatorRole, target.Id)
+			assert.Contains(t, recorder.Body.String(), `"success":false`)
+			var count int64
+			require.NoError(t, db.Unscoped().Model(&model.User{}).Where("id = ?", target.Id).Count(&count).Error)
+			assert.EqualValues(t, 1, count)
+		})
+	}
+}
+
 func TestManageUserDisableAdvancesAuthVersionOnceAndRevokesSession(t *testing.T) {
 	db := setupManageUserTestDB(t)
 	now := time.Now().Unix()
