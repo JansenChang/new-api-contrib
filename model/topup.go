@@ -12,16 +12,19 @@ import (
 )
 
 type TopUp struct {
-	Id              int     `json:"id"`
-	UserId          int     `json:"user_id" gorm:"index"`
-	Amount          int64   `json:"amount"`
-	Money           float64 `json:"money"`
-	TradeNo         string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
-	PaymentMethod   string  `json:"payment_method" gorm:"type:varchar(50)"`
-	PaymentProvider string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
-	CreateTime      int64   `json:"create_time"`
-	CompleteTime    int64   `json:"complete_time"`
-	Status          string  `json:"status"`
+	Id                  int     `json:"id"`
+	UserId              int     `json:"user_id" gorm:"index"`
+	BillingSubjectType  string  `json:"billing_subject_type" gorm:"type:varchar(20);not null;default:'personal';index"`
+	BillingSubjectId    int     `json:"billing_subject_id" gorm:"type:int;not null;default:0;index"`
+	BillingEnterpriseId int     `json:"billing_enterprise_id" gorm:"type:int;not null;default:0;index"`
+	Amount              int64   `json:"amount"`
+	Money               float64 `json:"money"`
+	TradeNo             string  `json:"trade_no" gorm:"unique;type:varchar(255);index"`
+	PaymentMethod       string  `json:"payment_method" gorm:"type:varchar(50)"`
+	PaymentProvider     string  `json:"payment_provider" gorm:"type:varchar(50);default:''"`
+	CreateTime          int64   `json:"create_time"`
+	CompleteTime        int64   `json:"complete_time"`
+	Status              string  `json:"status"`
 }
 
 const (
@@ -42,12 +45,16 @@ const (
 )
 
 var (
-	ErrPaymentMethodMismatch = errors.New("payment method mismatch")
-	ErrTopUpNotFound         = errors.New("topup not found")
-	ErrTopUpStatusInvalid    = errors.New("topup status invalid")
+	ErrPaymentMethodMismatch   = errors.New("payment method mismatch")
+	ErrPaymentProviderMismatch = errors.New("payment provider mismatch")
+	ErrTopUpNotFound           = errors.New("topup not found")
+	ErrTopUpStatusInvalid      = errors.New("topup status invalid")
 )
 
 func (topUp *TopUp) Insert() error {
+	if err := normalizeBillingSubject(&topUp.BillingSubjectType, &topUp.BillingSubjectId, &topUp.BillingEnterpriseId, topUp.UserId); err != nil {
+		return err
+	}
 	var err error
 	err = DB.Create(topUp).Error
 	return err

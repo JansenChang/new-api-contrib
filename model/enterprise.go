@@ -1,8 +1,11 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"gorm.io/gorm"
@@ -122,12 +125,29 @@ type EnterpriseLedger struct {
 	Amount                   int    `json:"amount" gorm:"type:int;not null"`
 	ActorUserId              int    `json:"actor_user_id" gorm:"type:int;not null;default:0;index"`
 	ReferenceType            string `json:"reference_type" gorm:"type:varchar(40);not null;default:''"`
-	ReferenceId              string `json:"reference_id" gorm:"type:varchar(128);not null;default:'';index"`
-	IdempotencyKey           string `json:"idempotency_key" gorm:"type:varchar(191);not null;uniqueIndex"`
+	ReferenceId              string `json:"reference_id" gorm:"type:varchar(255);not null;default:'';index"`
+	ReferenceHash            string `json:"-" gorm:"type:char(64);not null;default:''"`
+	IdempotencyKey           string `json:"idempotency_key" gorm:"type:varchar(191);not null;default:''"`
+	IdempotencyKeyHash       string `json:"-" gorm:"type:char(64);not null;default:''"`
+	CommandFingerprint       string `json:"-" gorm:"type:char(64);not null;default:''"`
+	CommandSummary           string `json:"-" gorm:"type:varchar(1024);not null;default:''"`
+	ReversesLedgerId         int64  `json:"reverses_ledger_id" gorm:"type:bigint;not null;default:0;index"`
 	RequestId                string `json:"request_id" gorm:"type:varchar(64);not null;default:'';index"`
 	Reason                   string `json:"reason" gorm:"type:varchar(255);not null;default:''"`
 	CreatedAt                int64  `json:"created_at" gorm:"type:bigint;not null"`
 }
+
+// enterpriseLedgerIndexSchema describes only the two composite indexes. It
+// is intentionally not AutoMigrated: existing rows must be backfilled before
+// either unique index is created.
+type enterpriseLedgerIndexSchema struct {
+	EnterpriseId       int    `gorm:"uniqueIndex:idx_enterprise_ledger_enterprise_idempotency,priority:1;uniqueIndex:idx_enterprise_ledger_enterprise_reference,priority:1"`
+	IdempotencyKeyHash string `gorm:"uniqueIndex:idx_enterprise_ledger_enterprise_idempotency,priority:2"`
+	ReferenceType      string `gorm:"uniqueIndex:idx_enterprise_ledger_enterprise_reference,priority:2"`
+	ReferenceHash      string `gorm:"uniqueIndex:idx_enterprise_ledger_enterprise_reference,priority:3"`
+}
+
+func (enterpriseLedgerIndexSchema) TableName() string { return "enterprise_ledgers" }
 
 type EnterpriseUsageRecord struct {
 	Id                     int64  `json:"id"`
@@ -209,7 +229,142 @@ func migrateEnterpriseFoundation(db *gorm.DB) error {
 			return err
 		}
 	}
+	if err := migrateEnterpriseLedgerIndexes(db); err != nil {
+		return err
+	}
+	if err := migrateBillingSubjectSnapshots(db); err != nil {
+		return err
+	}
 	return ensurePlatformAdminEnterprises(db)
+}
+
+func migrateBillingSubjectSnapshots(db *gorm.DB) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		if tx.Migrator().HasTable(&TopUp{}) {
+			// Historical backfill is the one controlled exception to the runtime
+			// snapshot immutability hooks. It remains in this migration transaction.
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&TopUp{}).Where("billing_subject_type IS NULL OR billing_subject_type <> ? OR billing_subject_id IS NULL OR billing_subject_id <> user_id OR billing_enterprise_id IS NULL OR billing_enterprise_id <> 0", BillingSubjectTypePersonal).Updates(map[string]any{
+				"billing_subject_type":  BillingSubjectTypePersonal,
+				"billing_subject_id":    gorm.Expr("user_id"),
+				"billing_enterprise_id": 0,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&SubscriptionOrder{}) {
+			if err := tx.Session(&gorm.Session{SkipHooks: true}).Model(&SubscriptionOrder{}).Where("billing_subject_type IS NULL OR billing_subject_type <> ? OR billing_subject_id IS NULL OR billing_subject_id <> user_id OR billing_enterprise_id IS NULL OR billing_enterprise_id <> 0", BillingSubjectTypePersonal).Updates(map[string]any{
+				"billing_subject_type":  BillingSubjectTypePersonal,
+				"billing_subject_id":    gorm.Expr("user_id"),
+				"billing_enterprise_id": 0,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func migrateEnterpriseLedgerIndexes(db *gorm.DB) error {
+	// Keep the legacy global unique constraint until the replacement indexes
+	// are fully created. A failed migration must never weaken idempotency.
+	var rows []EnterpriseLedger
+	if err := db.Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		updates := map[string]any{}
+		if row.IdempotencyKeyHash == "" {
+			updates["idempotency_key_hash"] = enterpriseLedgerHash(row.IdempotencyKey, row.Id)
+		}
+		if row.ReferenceHash == "" {
+			updates["reference_hash"] = enterpriseReferenceHash(row.ReferenceType, row.ReferenceId, row.Id)
+		}
+		// Do not reconstruct a command summary from historical deltas. Legacy
+		// adjustment rows do not retain direction, so they must not become
+		// replayable by guessing it from the old balance change.
+		if len(updates) == 0 {
+			continue
+		}
+		if err := db.Session(&gorm.Session{SkipHooks: true}).Model(&EnterpriseLedger{}).Where("id = ?", row.Id).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	if err := ensureEnterpriseLedgerUniqueKeysAvailable(db); err != nil {
+		return err
+	}
+	for _, indexName := range []string{"idx_enterprise_ledger_enterprise_idempotency", "idx_enterprise_ledger_enterprise_reference"} {
+		if !db.Migrator().HasIndex(&enterpriseLedgerIndexSchema{}, indexName) {
+			if err := db.Migrator().CreateIndex(&enterpriseLedgerIndexSchema{}, indexName); err != nil {
+				return err
+			}
+		}
+	}
+	// GORM does not remove obsolete indexes when tags change. Only after both
+	// enterprise-scoped indexes exist is it safe to remove the old global ones.
+	for _, indexName := range []string{
+		"idx_enterprise_ledgers_idempotency_key",
+		"uni_enterprise_ledgers_idempotency_key",
+		"idx_enterprise_ledger_idempotency_key",
+	} {
+		if db.Migrator().HasIndex(&EnterpriseLedger{}, indexName) {
+			if err := db.Migrator().DropIndex(&EnterpriseLedger{}, indexName); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func ensureEnterpriseLedgerUniqueKeysAvailable(db *gorm.DB) error {
+	var duplicateIdempotency []struct {
+		EnterpriseID int    `gorm:"column:enterprise_id"`
+		KeyHash      string `gorm:"column:idempotency_key_hash"`
+		Count        int    `gorm:"column:duplicate_count"`
+	}
+	if err := db.Model(&EnterpriseLedger{}).
+		Select("enterprise_id, idempotency_key_hash, COUNT(*) AS duplicate_count").
+		Where("idempotency_key_hash <> ''").
+		Group("enterprise_id, idempotency_key_hash").
+		Having("COUNT(*) > 1").Find(&duplicateIdempotency).Error; err != nil {
+		return err
+	}
+	if len(duplicateIdempotency) > 0 {
+		return fmt.Errorf("enterprise ledger idempotency duplicate: enterprise_id=%d hash=%s count=%d", duplicateIdempotency[0].EnterpriseID, duplicateIdempotency[0].KeyHash, duplicateIdempotency[0].Count)
+	}
+	var duplicateReference []struct {
+		EnterpriseID  int    `gorm:"column:enterprise_id"`
+		ReferenceType string `gorm:"column:reference_type"`
+		ReferenceHash string `gorm:"column:reference_hash"`
+		Count         int    `gorm:"column:duplicate_count"`
+	}
+	if err := db.Model(&EnterpriseLedger{}).
+		Select("enterprise_id, reference_type, reference_hash, COUNT(*) AS duplicate_count").
+		Where("reference_hash <> ''").
+		Group("enterprise_id, reference_type, reference_hash").
+		Having("COUNT(*) > 1").Find(&duplicateReference).Error; err != nil {
+		return err
+	}
+	if len(duplicateReference) > 0 {
+		return fmt.Errorf("enterprise ledger reference duplicate: enterprise_id=%d reference_type=%s hash=%s count=%d", duplicateReference[0].EnterpriseID, duplicateReference[0].ReferenceType, duplicateReference[0].ReferenceHash, duplicateReference[0].Count)
+	}
+	return nil
+}
+
+func enterpriseLedgerHash(value string, id int64) string {
+	if value == "" {
+		value = "legacy-ledger-" + strconv.FormatInt(id, 10)
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+func enterpriseReferenceHash(referenceType, referenceID string, id int64) string {
+	if referenceType == "" && referenceID == "" {
+		referenceType = "legacy-ledger"
+		referenceID = strconv.FormatInt(id, 10)
+	}
+	sum := sha256.Sum256([]byte(referenceType + "\x00" + referenceID))
+	return hex.EncodeToString(sum[:])
 }
 
 // EnsurePlatformAdminEnterprises is exported for controlled migration checks.
