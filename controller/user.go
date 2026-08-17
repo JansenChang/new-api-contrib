@@ -635,7 +635,9 @@ func SearchUsers(c *gin.Context) {
 }
 
 func canManageTargetRole(myRole int, targetRole int) bool {
-	return myRole == common.RoleRootUser || myRole > targetRole
+	// Root and Admin share platform-business authority, but neither may alter
+	// another privileged account's identity or authentication state.
+	return myRole >= common.RoleAdminUser && targetRole < common.RoleAdminUser
 }
 
 func GetUser(c *gin.Context) {
@@ -1225,7 +1227,7 @@ func DeleteUser(c *gin.Context) {
 		return
 	}
 	myRole := c.GetInt("role")
-	if myRole <= originUser.Role {
+	if !canManageTargetRole(myRole, originUser.Role) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
