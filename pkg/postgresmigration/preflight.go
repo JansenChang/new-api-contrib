@@ -167,12 +167,6 @@ func Preflight(manifest Manifest, source, target SchemaSnapshot) Report {
 	return preflight(SQLite34PreEnterprise(), manifest, source, target)
 }
 
-// PreflightWithProfile is kept for deterministic profile-contract tests. It
-// is not an import path: it still only compares in-memory metadata.
-func PreflightWithProfile(profile Profile, manifest Manifest, source, target SchemaSnapshot) Report {
-	return preflight(profile, manifest, source, target)
-}
-
 func preflight(profile Profile, manifest Manifest, source, target SchemaSnapshot) Report {
 	report := Report{
 		CandidateSHA: manifest.CandidateSHA,
@@ -276,12 +270,6 @@ func sameNames(tables map[string]TableSnapshot, expected []string) bool {
 		}
 	}
 	return true
-}
-
-// ValidateSourceSchema compares a source snapshot with a fixed profile. It is
-// exported for the later signature-building slice and remains side-effect-free.
-func ValidateSourceSchema(profile Profile, source SchemaSnapshot) bool {
-	return validateSourceSchema(profile, source)
 }
 
 func validateSourceSchema(profile Profile, source SchemaSnapshot) bool {

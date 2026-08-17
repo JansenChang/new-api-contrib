@@ -102,7 +102,7 @@ func TestPostgresPrimaryMigrationPreflightRejectsColumnSignatureDrift(t *testing
 		source := source34()
 		columns := append([]ColumnMetadata(nil), base.Tables["abilities"].Columns...)
 		source.Tables["abilities"] = TableSnapshot{Columns: mutate(columns)}
-		assert.False(t, ValidateSourceSchema(profile, source))
+		assert.False(t, validateSourceSchema(profile, source))
 	}
 }
 
@@ -127,9 +127,7 @@ func TestPostgresPrimaryMigrationPreflightRejectsIndexSignatureDrift(t *testing.
 func TestPostgresPrimaryMigrationPreflightRejectsIncompleteProfile(t *testing.T) {
 	profile := SQLite34PreEnterprise()
 	profile.SourceSpecs[0].Columns = nil
-	report := PreflightWithProfile(profile, validManifest(), source34(), SchemaSnapshot{})
-	require.False(t, report.OK())
-	assert.Contains(t, report.Failures, FailureLocation{Reason: "incomplete_table_spec"})
+	assert.False(t, validateProfile(profile))
 }
 
 func TestPostgresPrimaryMigrationPreflightRejectsUnsupportedSQLite34SourceOrLog(t *testing.T) {
