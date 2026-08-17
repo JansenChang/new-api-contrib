@@ -73,6 +73,7 @@ type IndexSpec struct {
 	Name    string
 	Unique  bool
 	Origin  string
+	Partial bool
 	Columns []string
 }
 
@@ -80,6 +81,7 @@ type IndexMetadata struct {
 	Name    string
 	Unique  bool
 	Origin  string
+	Partial bool
 	Columns []string
 }
 
@@ -144,7 +146,7 @@ func cloneTableSpecs(specs []TableSpec) []TableSpec {
 	for i, spec := range specs {
 		result[i] = TableSpec{Name: spec.Name, Columns: append([]ColumnSpec(nil), spec.Columns...), Indexes: make([]IndexSpec, len(spec.Indexes))}
 		for j, index := range spec.Indexes {
-			result[i].Indexes[j] = IndexSpec{Name: index.Name, Unique: index.Unique, Origin: index.Origin, Columns: append([]string(nil), index.Columns...)}
+			result[i].Indexes[j] = IndexSpec{Name: index.Name, Unique: index.Unique, Origin: index.Origin, Partial: index.Partial, Columns: append([]string(nil), index.Columns...)}
 		}
 	}
 	return result
@@ -285,7 +287,7 @@ func sameIndexes(actual []IndexMetadata, expected []IndexSpec) bool {
 		return false
 	}
 	for i := range expected {
-		if actual[i].Name != expected[i].Name || actual[i].Unique != expected[i].Unique || actual[i].Origin != expected[i].Origin || len(actual[i].Columns) != len(expected[i].Columns) {
+		if actual[i].Name != expected[i].Name || actual[i].Unique != expected[i].Unique || actual[i].Origin != expected[i].Origin || actual[i].Partial != expected[i].Partial || len(actual[i].Columns) != len(expected[i].Columns) {
 			return false
 		}
 		for j := range expected[i].Columns {

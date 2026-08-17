@@ -34,6 +34,15 @@ func TestCollectSQLite34SnapshotRejectsMissingTableAndIndexDrift(t *testing.T) {
 	_, err = CollectSQLite34Snapshot(context.Background(), db)
 	require.Error(t, err)
 
+	db3, err := sql.Open("sqlite", "file:sqlite34-collector-extra?mode=memory&cache=shared")
+	require.NoError(t, err)
+	defer db3.Close()
+	createSQLite34Fixture(t, db3)
+	_, err = db3.Exec(`CREATE TABLE "enterprises" ("id" INTEGER PRIMARY KEY)`)
+	require.NoError(t, err)
+	_, err = CollectSQLite34Snapshot(context.Background(), db3)
+	require.Error(t, err)
+
 	db2, err := sql.Open("sqlite", "file:sqlite34-collector-index-drift?mode=memory&cache=shared")
 	require.NoError(t, err)
 	defer db2.Close()
@@ -43,6 +52,14 @@ func TestCollectSQLite34SnapshotRejectsMissingTableAndIndexDrift(t *testing.T) {
 	snapshot, err = CollectSQLite34Snapshot(context.Background(), db2)
 	require.NoError(t, err)
 	require.False(t, Preflight(validManifest(), snapshot, SchemaSnapshot{}).OK())
+}
+
+func TestPostgresPrimaryMigrationPreflightRejectsPartialIndexDrift(t *testing.T) {
+	source := source34()
+	index := source.Tables["users"].Indexes[0]
+	index.Partial = true
+	source.Tables["users"] = TableSnapshot{Columns: source.Tables["users"].Columns, Indexes: append([]IndexMetadata{index}, source.Tables["users"].Indexes[1:]...)}
+	require.False(t, Preflight(validManifest(), source, SchemaSnapshot{}).OK())
 }
 
 func createSQLite34Fixture(t *testing.T, db *sql.DB) {

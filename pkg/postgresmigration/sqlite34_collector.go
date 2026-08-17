@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 )
 
 // CollectSQLite34Snapshot reads only the fixed SQLite-34 metadata contract.
@@ -17,6 +18,9 @@ func CollectSQLite34Snapshot(ctx context.Context, db *sql.DB) (SchemaSnapshot, e
 	}
 
 	profile := SQLite34PreEnterprise()
+	if err := validateSQLite34TableSet(ctx, db, profile.SourceTables); err != nil {
+		return SchemaSnapshot{}, err
+	}
 	snapshot := SchemaSnapshot{Tables: make(map[string]TableSnapshot, len(profile.SourceSpecs))}
 	for _, spec := range profile.SourceSpecs {
 		table := quoteSQLiteIdentifier(spec.Name)
@@ -35,6 +39,35 @@ func CollectSQLite34Snapshot(ctx context.Context, db *sql.DB) (SchemaSnapshot, e
 		snapshot.Tables[spec.Name] = TableSnapshot{Columns: columns, Indexes: indexes, RowCount: rowCount}
 	}
 	return snapshot, nil
+}
+
+func validateSQLite34TableSet(ctx context.Context, db *sql.DB, expected []string) error {
+	rows, err := db.QueryContext(ctx, "SELECT name FROM main.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		return fmt.Errorf("enumerate SQLite tables: %w", err)
+	}
+	defer rows.Close()
+	actual := make([]string, 0, len(expected))
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("enumerate SQLite tables: %w", err)
+		}
+		actual = append(actual, name)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("enumerate SQLite tables: %w", err)
+	}
+	if len(actual) != len(expected) {
+		return fmt.Errorf("SQLite-34 table set drift: expected %d tables, found %d", len(expected), len(actual))
+	}
+	for _, name := range expected {
+		found := sort.SearchStrings(actual, name)
+		if found == len(actual) || actual[found] != name {
+			return fmt.Errorf("SQLite-34 table set drift: unexpected or missing table %q", name)
+		}
+	}
+	return nil
 }
 
 func collectSQLite34Columns(ctx context.Context, db *sql.DB, table string) ([]ColumnMetadata, error) {
@@ -63,8 +96,9 @@ func collectSQLite34Indexes(ctx context.Context, db *sql.DB, table string, spec 
 	}
 	defer rows.Close()
 	type indexInfo struct {
-		name, origin string
-		unique       bool
+		seq             int
+		name, origin    string
+		unique, partial bool
 	}
 	var infos []indexInfo
 	for rows.Next() {
@@ -73,7 +107,7 @@ func collectSQLite34Indexes(ctx context.Context, db *sql.DB, table string, spec 
 		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
 			return nil, err
 		}
-		infos = append(infos, indexInfo{name: name, unique: unique != 0, origin: origin})
+		infos = append(infos, indexInfo{seq: seq, name: name, unique: unique != 0, origin: origin, partial: partial != 0})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -81,6 +115,7 @@ func collectSQLite34Indexes(ctx context.Context, db *sql.DB, table string, spec 
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].seq < infos[j].seq })
 	indexes := make([]IndexMetadata, 0, len(infos))
 	for _, info := range infos {
 		indexName := ""
@@ -97,7 +132,7 @@ func collectSQLite34Indexes(ctx context.Context, db *sql.DB, table string, spec 
 		if err != nil {
 			return nil, fmt.Errorf("index %q: %w", info.name, err)
 		}
-		indexes = append(indexes, IndexMetadata{Name: info.name, Unique: info.unique, Origin: info.origin, Columns: columns})
+		indexes = append(indexes, IndexMetadata{Name: info.name, Unique: info.unique, Origin: info.origin, Partial: info.partial, Columns: columns})
 	}
 	return indexes, nil
 }
@@ -108,19 +143,31 @@ func collectSQLite34IndexColumns(ctx context.Context, db *sql.DB, index string) 
 		return nil, err
 	}
 	defer rows.Close()
-	var columns []string
+	type columnInfo struct {
+		seq  int
+		name sql.NullString
+	}
+	var infos []columnInfo
 	for rows.Next() {
 		var seq, cid int
 		var name sql.NullString
 		if err := rows.Scan(&seq, &cid, &name); err != nil {
 			return nil, err
 		}
-		if !name.Valid {
+		infos = append(infos, columnInfo{seq: seq, name: name})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(infos, func(i, j int) bool { return infos[i].seq < infos[j].seq })
+	columns := make([]string, 0, len(infos))
+	for _, info := range infos {
+		if !info.name.Valid {
 			return nil, fmt.Errorf("index column is expression")
 		}
-		columns = append(columns, name.String)
+		columns = append(columns, info.name.String)
 	}
-	return columns, rows.Err()
+	return columns, nil
 }
 
 func quoteSQLiteIdentifier(identifier string) string {
