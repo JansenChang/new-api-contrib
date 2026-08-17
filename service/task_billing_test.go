@@ -217,7 +217,7 @@ func TestCompleteEnterpriseTaskSettlesBeforeTerminalTaskUpdate(t *testing.T) {
 	require.NoError(t, model.DB.First(&saved, task.ID).Error)
 	require.NoError(t, model.DB.Select("quota").Where("id = ?", task.UserId).First(&user).Error)
 	assert.Equal(t, model.EnterpriseUsageStateSettled, usage.State)
-	assert.Equal(t, model.TaskStatusSuccess, saved.Status)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusSuccess), saved.Status)
 	assert.Zero(t, user.Quota)
 }
 
@@ -237,13 +237,16 @@ func TestSweepTimedOutEnterpriseTaskMovesToManualReviewWithoutRefund(t *testing.
 	require.NoError(t, model.DB.First(&usage, usageID).Error)
 	require.NoError(t, model.DB.First(&saved, task.ID).Error)
 	assert.Equal(t, model.EnterpriseUsageStateManualReview, usage.State)
-	assert.Equal(t, model.TaskStatusManualReview, saved.Status)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusManualReview), saved.Status)
 	assert.Equal(t, 60, usage.ReservedQuota)
 }
 
 func TestRunTaskPollingMovesEnterpriseTaskWithoutUpstreamIDToManualReview(t *testing.T) {
 	truncate(t)
 	task, usageID := seedEnterpriseSubmittedTask(t, 803, 60)
+	previousTaskQueryLimit := constant.TaskQueryLimit
+	constant.TaskQueryLimit = 100
+	t.Cleanup(func() { constant.TaskQueryLimit = previousTaskQueryLimit })
 	previousFactory := GetTaskAdaptorFunc
 	GetTaskAdaptorFunc = func(constant.TaskPlatform) TaskPollingAdaptor { return &taskPollingFetchAdaptor{} }
 	t.Cleanup(func() { GetTaskAdaptorFunc = previousFactory })
@@ -255,7 +258,7 @@ func TestRunTaskPollingMovesEnterpriseTaskWithoutUpstreamIDToManualReview(t *tes
 	require.NoError(t, model.DB.First(&usage, usageID).Error)
 	require.NoError(t, model.DB.First(&saved, task.ID).Error)
 	assert.Equal(t, model.EnterpriseUsageStateManualReview, usage.State)
-	assert.Equal(t, model.TaskStatusManualReview, saved.Status)
+	assert.Equal(t, model.TaskStatus(model.TaskStatusManualReview), saved.Status)
 }
 
 func TestPriceDataOtherRatiosFilterAndSnapshot(t *testing.T) {

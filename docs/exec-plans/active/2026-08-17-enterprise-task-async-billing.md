@@ -23,3 +23,4 @@
 
 - 2026-08-17：随 D 主切片以 `e7fadcff8` 提交，并由 `63df9d6d7` 受控整合；发布门保持关闭，未推送、未部署。
 - 2026-08-17：复跑企业 Task 定向测试时，发现测试期望值是无类型 `string`，而持久化字段稳定公开类型为 `model.TaskStatus`；仅将 3 处断言显式转换为 `TaskStatus`，并为同组普通用户夹具补充唯一 `AffCode`。`TestEnterpriseTaskDraftAndReserveAreAtomic`、人工成功/退款结案测试通过；未修改业务逻辑。更宽的企业 model/service 测试仍有既有夹具唯一约束、SQLite 并发/金额断言及上游轮询行为失败，未将其记为通过，待单独切片处理。
+- 2026-08-18：修复 service 企业异步终态回归夹具：Task 状态断言显式使用 `model.TaskStatus`，轮询测试显式设置 `constant.TaskQueryLimit`，避免单测未加载运行时环境导致查询上限为 0。`TestCompleteEnterpriseTaskSettlesBeforeTerminalTaskUpdate`、`TestSweepTimedOutEnterpriseTaskMovesToManualReviewWithoutRefund`、`TestRunTaskPollingMovesEnterpriseTaskWithoutUpstreamIDToManualReview` 定向运行通过；仅调整测试类型与隔离运行时配置，未改变企业结算、退款或人工复核逻辑。
