@@ -17,9 +17,11 @@
 - `docker-compose.yml` 和 `docker-compose.dev.yml` 使用 PostgreSQL 15，属于开发/示例配置，不能推断生产事实。
 - 基线隔离 UAT 的清洗导入和内部 HTTP 200 已被记录，但结果明确排除生产切换、企业 E2E、MySQL 和真实外部系统。
 - 企业账本 NUL 兼容修复已在独立提交 `df33b9ec9` 完成并通过专用 PostgreSQL 合同验证；候选整合和历史 NUL 数据转换仍是切换前置项。
-- 2026-08-17 17:57Z 对 SSH 158 仅运行 Docker 容器、网络、挂载元数据和磁盘空间盘点：生产 `new-api`、`new-api-l1-test`、`mysql_db` 与 PostgreSQL UAT 资源可见；本次没有读取任何环境变量、DSN、数据库数据、卷内容或日志，也没有执行写操作。
-- 可见拓扑证明生产 `new-api` 的网络/挂载与 `new-api-pg-uat-*` 的网络/挂载路径不同，UAT PostgreSQL 未发布宿主机端口；但同一 UAT 网络内同时运行两个候选应用和一个 PostgreSQL 容器，尚无证据证明候选应用使用独立数据库。因此该 UAT 不能直接作为下一轮候选验收环境。
-- `mysql_db` 虽在运行，但它与生产 `new-api` 未共享已见 Docker 网络；在不读取生产 DSN 的约束下，不能据此判断 MySQL 是否为生产主库或日志库。主库类型/版本、日志库、Redis 所有权、全部写入者、备份恢复和数据规模仍为 `UNKNOWN`。
+- 2026-08-17 17:57Z 对 SSH 158 仅运行 Docker 容器、网络、挂载元数据和磁盘空间盘点：生产 `new-api`、`new-api-l1-test`、`mysql_db` 与 PostgreSQL UAT 资源可见；本次没有读取任何环境变量、DSN、数据库数据或卷内容，也没有执行写操作。
+- 生产 `new-api` 的启动日志仅筛选并返回了数据库类型行：2026-08-15 的本次容器启动报告 `SQL_DSN not set, using SQLite as database`。因此生产**主库类型为 SQLite**已获运行时证据；本次未读取 SQLite 文件、`LOG_SQL_DSN` 或日志库数据，日志库身份仍为 `UNKNOWN`。
+- `new-api-pg-uat-net` 是 `internal=true`、`attachable=false` 的本地 bridge 网络，当前仅有 PostgreSQL 和两个候选应用，均未发布宿主机端口；它与生产 `new-api`、L1 测试、OpenCodex、MySQL 没有直接共享 Docker 网络。路径和网络隔离已获容器元数据证据。
+- 两个候选应用仍同时连接同一 UAT PostgreSQL 网络；Docker 元数据无法证明它们使用不同数据库、schema 或账号，因此不能排除并发 `AutoMigrate`/写入竞争。该 UAT 不得直接作为下一轮候选验收环境。
+- `mysql_db` 虽在运行，但它与生产 `new-api` 未共享已见 Docker 网络；不能据此判断 MySQL 是否为生产日志库。主库版本、SQLite WAL 状态、日志库、Redis 所有权、全部写入者、备份恢复和数据规模仍为 `UNKNOWN`。
 
 ## 修改范围
 
@@ -62,14 +64,14 @@ go test ./model -run '^$' -count=1
 
 | 项目 | 只读事实 | 结论 |
 | --- | --- | --- |
-| 生产应用 | `new-api` 持续运行并公开 3000；挂载 `/docker/new-api/new-api.l1-final-20260814` 与 `/docker/new-api/data` | 生产资源已识别，但未读取其内容或配置。 |
+| 生产应用与主库 | `new-api` 持续运行并公开 3000；挂载 `/docker/new-api/new-api.l1-final-20260814` 与 `/docker/new-api/data`；本容器启动日志报告 `SQL_DSN not set, using SQLite as database` | 生产主库类型为 SQLite；未读取文件、配置或日志库 DSN。 |
 | MySQL | `mysql_db` 持续运行并公开 3306；可见于 `mysql_default`，与 `new-api` 的已见网络不同 | 不是主库/日志库身份的证据；不得据容器名推断。 |
-| PostgreSQL UAT | `new-api-pg-uat-pg` 与两个 UAT 应用仅位于 `new-api-pg-uat-net`，未发布宿主机端口；挂载路径位于 `/docker/new-api-pg-uat/` | 与生产路径和网络可见分离，但两个应用共用同一 PostgreSQL 容器/网络，数据库级隔离为 `UNKNOWN`。 |
+| PostgreSQL UAT | `new-api-pg-uat-net` 为 `internal=true`、`attachable=false` 的 bridge 网络；PostgreSQL 与两个 UAT 应用均未发布宿主机端口，挂载路径位于 `/docker/new-api-pg-uat/` | 与生产容器无直接共享 Docker 网络；两个应用共用同一 PostgreSQL 容器/网络，数据库级隔离为 `UNKNOWN`。 |
 | 磁盘 | `/docker` 所在文件系统可用约 131G（30% 已用） | 仅为单时点容量线索，不是导入容量或备份能力证明。 |
-| 主/日志库和写入者 | 未读取 DSN、数据库、应用配置、进程环境或日志 | `UNKNOWN`；P-M2/生产切换不得开始。 |
+| 日志库和写入者 | 未读取日志库 DSN、数据库、应用配置、进程环境或业务日志 | `UNKNOWN`；P-M2 的合成演练可以开始，生产切换不得开始。 |
 
 ## 结果与未解决项
 
-- 已完成：迁移技术设计和实施顺序、P-M0 的容器级只读盘点；明确 `AutoMigrate` 不复制历史数据、UAT 不等于生产、没有全局写闸/CDC/自动回切这一事实边界。企业账本 PostgreSQL NUL 修复已进入 F3-B 候选并有专用合同证据。
-- 未运行：生产主/日志库身份确认、生产数据 NUL 扫描、SQLite/MySQL 实体迁移、完整写入者/备份/Redis 盘点、UAT 脱敏/出站验证、生产预检和生产切换。
-- 阻塞条件：生产数据库和写入边界仍 `UNKNOWN`；当前 UAT 有两个候选应用共用一个 PostgreSQL 容器，数据库级隔离未证实；历史 NUL 账本转换或失败关闭规则尚未设计。
+- 已完成：迁移技术设计和实施顺序、P-M0 的容器级只读盘点；生产主库为 SQLite 已获运行时类型证据。明确 `AutoMigrate` 不复制历史数据、UAT 不等于生产、没有全局写闸/CDC/自动回切这一事实边界。企业账本 PostgreSQL NUL 修复已进入 F3-B 候选并有专用合同证据。
+- 未运行：生产 SQLite 版本/WAL/规模与日志库身份、生产数据 NUL 扫描、SQLite/MySQL 实体迁移、完整写入者/备份/Redis 盘点、UAT 脱敏/出站验证、生产预检和生产切换。
+- 阻塞条件：日志库与生产写入边界仍 `UNKNOWN`；当前 UAT 有两个候选应用共用一个 PostgreSQL 容器，数据库级隔离未证实；历史 NUL 账本转换或失败关闭规则尚未设计。
