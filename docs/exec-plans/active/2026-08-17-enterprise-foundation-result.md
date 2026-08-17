@@ -4,6 +4,8 @@
 
 分支：`codex/enterprise-foundation`
 
+状态：已提交并受控整合
+
 ## 已实现
 
 - 新增 `Enterprise`、`EnterpriseMembership`、`EnterpriseInvitation`、`EnterpriseLedger`、`EnterpriseUsageRecord` 和 `APIKeyDelivery` 主库模型及跨库可用的普通/唯一索引。
@@ -28,7 +30,8 @@
 
 - `TEST_POSTGRES_DSN`、`TEST_MYSQL_DSN` 未配置，PostgreSQL/MySQL 实例测试 NOT_RUN；仅做 GORM 类型和索引的静态跨库审查。
 - 未连接 SSH、未读取或使用生产数据、未新增路由/计费/支付/Key/前端逻辑。
-- 未提交 Git commit；其他切片的成员生命周期、账本动作、Relay 结算、Key 轮换和企业 E2E 均未实现。
+- 已于 2026-08-17 提交为 `d176cf836`，并合入 `codex/single-primary-api-key-clean` 的受控集成提交 `a53cfbef2`。干净集成工作树已复跑企业 model、管理员晋升/建企业和平台角色保护的定向测试，以及 `git diff --check`。
+- 其他切片的成员生命周期、账本动作、Relay 结算、Key 轮换和企业 E2E 均未实现。
 
 ## 可能冲突文件
 
