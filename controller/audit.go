@@ -50,6 +50,12 @@ var auditContentTemplates = map[string]string{
 	"subscription.plan_reset":           "Reset active subscriptions for plan ${plan_id}",
 	"subscription.user_plan_reset":      "Reset active plan ${plan_id} subscriptions for user ${target_user_id}",
 	"enterprise.task_manual_resolution": "Manually resolved enterprise task ${task_id} as ${outcome}",
+	"enterprise.owner_assign":           "Assigned enterprise owner (user ID: ${user_id}, enterprise ID: ${enterprise_id})",
+	"enterprise.quota_allocate":         "Allocated enterprise quota ${amount} to membership ${membership_id}",
+	"enterprise.quota_reclaim":          "Reclaimed enterprise quota ${amount} from membership ${membership_id}",
+	"enterprise.member_pause":           "Paused enterprise membership ${membership_id}",
+	"enterprise.member_resume":          "Resumed enterprise membership ${membership_id}",
+	"enterprise.member_remove":          "Removed enterprise membership ${membership_id}",
 }
 
 // auditContentEN 按 action 模板渲染英文兜底文本；未登记的 action 退回 action 本身。

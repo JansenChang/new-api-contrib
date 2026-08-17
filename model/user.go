@@ -19,6 +19,12 @@ import (
 
 const UserNameMaxLength = 20
 
+// ErrEnterpriseOwnerLifecycleBlocked prevents disabling or deleting a user
+// while the user still anchors an enterprise. Ownership transfer/closure is
+// intentionally outside the current product slice, so refusing the
+// operation is safer than leaving an enterprise without an owner.
+var ErrEnterpriseOwnerLifecycleBlocked = errors.New("enterprise owner cannot be disabled or deleted")
+
 var userSortColumns = map[string]string{
 	"id":            "id",
 	"username":      "username",
@@ -843,6 +849,11 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 	if err = tx.First(&current, user.Id).Error; err != nil {
 		return err
 	}
+	if current.Status != common.UserStatusDisabled && newUser.Status == common.UserStatusDisabled {
+		if err := guardEnterpriseOwnerLifecycleWithTx(tx, user.Id); err != nil {
+			return err
+		}
+	}
 	promotedToPlatformAdmin := !isPlatformAdminRole(current.Role) && isPlatformAdminRole(newUser.Role)
 	// Updates(struct) ignores zero values. Match that behavior when deciding
 	// whether this request actually changes authentication-sensitive state;
@@ -981,6 +992,9 @@ func (user *User) Delete() error {
 	var nextAuthVersion int64
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
+		if err := guardEnterpriseOwnerLifecycleWithTx(tx, user.Id); err != nil {
+			return err
+		}
 		nextAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
 			return err
@@ -1006,6 +1020,9 @@ func (user *User) HardDelete() error {
 	var deletedAuthVersion int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var err error
+		if err := guardEnterpriseOwnerLifecycleWithTx(tx, user.Id); err != nil {
+			return err
+		}
 		deletedAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
 			return err
@@ -1031,6 +1048,45 @@ func (user *User) HardDelete() error {
 	}
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(fmt.Sprintf("failed to invalidate user cache after hard deleting user %d: %v", user.Id, err))
+	}
+	return nil
+}
+
+// guardEnterpriseOwnerLifecycleWithTx serializes the user row with enterprise
+// ownership checks. Both the relationship row and the enterprise owner
+// anchor are checked because either one is enough to make deletion/disablement
+// unsafe when legacy or partially migrated data is present.
+func guardEnterpriseOwnerLifecycleWithTx(tx *gorm.DB, userID int) error {
+	if tx == nil || userID <= 0 {
+		return errors.New("invalid user lifecycle guard input")
+	}
+	var current User
+	if err := lockForUpdate(tx).Unscoped().Where("id = ?", userID).Select("id").First(&current).Error; err != nil {
+		return err
+	}
+
+	if tx.Migrator().HasTable(&EnterpriseMembership{}) {
+		var ownerMembership EnterpriseMembership
+		err := lockForUpdate(tx).
+			Where("user_id = ? AND role = ? AND status <> ?", userID, EnterpriseMembershipRoleOwner, EnterpriseMembershipStatusRemoved).
+			Select("id").First(&ownerMembership).Error
+		if err == nil {
+			return ErrEnterpriseOwnerLifecycleBlocked
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+
+	if tx.Migrator().HasTable(&Enterprise{}) {
+		var ownedEnterprise Enterprise
+		err := lockForUpdate(tx).Where("owner_user_id = ?", userID).Select("id").First(&ownedEnterprise).Error
+		if err == nil {
+			return ErrEnterpriseOwnerLifecycleBlocked
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
 	}
 	return nil
 }

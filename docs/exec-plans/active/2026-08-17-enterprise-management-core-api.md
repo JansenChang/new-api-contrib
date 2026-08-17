@@ -1,6 +1,6 @@
 # 企业管理核心 API（H1）执行计划
 
-状态：ACTIVE  
+状态：ACTIVE（代码与本地定向回归完成；等待隔离 UAT）
 负责人：Codex  
 更新时间：2026-08-17
 
@@ -49,4 +49,8 @@ git diff --check
 ## 结果与未解决项
 
 - 2026-08-17：H1 规格已从完整 H 中分离，以避免猜测企业邀请的邮件和建户交付契约。
-- 尚未实现、未运行测试、未部署、未开启企业发布门。
+- 2026-08-17：已实现独立 Owner 指派、安全摘要/成员投影、额度划转/回收包装、暂停/恢复/排空移除 HTTP API、关闭门和脱敏审计；所有资金写入仍经 C1，不直接更新额度汇总。
+- 2026-08-17：根据权限审计补充 C1 事务内 Owner 三重一致性（用户锚点、企业 Owner/ACTIVE、ACTIVE Owner membership），并在用户禁用、软删除、硬删除前拒绝仍拥有企业的 Owner，防止无主企业；旧数据库缺企业表时生命周期保护按无企业处理。
+- 已通过：`go test ./model -run 'Test(SetEnterpriseOwnerCreatesOnlyEnterpriseRelationship|EnterpriseManagementQuotaUsesC1AndReplaysByOperationKey|EnterpriseManagementReadsRequireConsistentOwnerEnterpriseAnchor|EnterpriseLedgerRejectsInconsistentOwnerAnchor|EnterpriseMemberProjectionDoesNotExposeUserCredentials|EnterpriseOwnerLifecycle)' -count=1 -timeout 120s`；`go test ./middleware ./service ./controller ./router -run 'TestEnterprise' -count=1 -timeout 120s`；`git diff --check`。
+- 基线验证：全量多包回归失败于既有 `controller/user_manage_test.go` 的会话撤销/同级权限断言；相同精确测试在未改动基线工作树 `codex/enterprise-management-core-spec` 亦失败，非本切片引入。完整 `./model` 亦存在既有单主 Key 测试失败，未据此修改无关行为。
+- `NOT_RUN`：MySQL/PostgreSQL 运行回归、隔离 UAT 的 H1 版本部署与打开门的合成账户 E2E、真实 SMTP/支付/前端、生产部署。企业发布门仍保持关闭。

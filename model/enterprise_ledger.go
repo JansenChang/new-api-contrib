@@ -557,6 +557,26 @@ func requireEnterpriseOwner(tx *gorm.DB, enterpriseID, userID int) error {
 	if userID <= 0 {
 		return ErrEnterpriseOwnerRequired
 	}
+	var actor User
+	if err := lockForUpdate(tx).Select("id", "active_enterprise_id").Where("id = ?", userID).First(&actor).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrEnterpriseOwnerRequired
+		}
+		return err
+	}
+	if actor.ActiveEnterpriseId != enterpriseID {
+		return ErrEnterpriseOwnerRequired
+	}
+	var enterprise Enterprise
+	if err := lockForUpdate(tx).Select("id", "owner_user_id", "status").Where("id = ?", enterpriseID).First(&enterprise).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrEnterpriseOwnerRequired
+		}
+		return err
+	}
+	if enterprise.OwnerUserId != userID || enterprise.Status != EnterpriseStatusActive {
+		return ErrEnterpriseOwnerRequired
+	}
 	var owner EnterpriseMembership
 	if err := lockForUpdate(tx).Where("enterprise_id = ? AND user_id = ? AND role = ?", enterpriseID, userID, EnterpriseMembershipRoleOwner).First(&owner).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

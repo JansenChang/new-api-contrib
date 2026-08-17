@@ -148,6 +148,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.GET("/:id", controller.GetUser)
 				adminRoute.POST("/", controller.CreateUser)
 				adminRoute.POST("/manage", controller.ManageUser)
+				adminRoute.POST("/:id/enterprise-admin", middleware.DisableCache(), middleware.EnterpriseFeatureEnabled(), controller.SetEnterpriseOwner)
 				adminRoute.PUT("/", controller.UpdateUser)
 				adminRoute.DELETE("/:id", controller.DeleteUser)
 				adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
@@ -156,6 +157,18 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.GET("/2fa/stats", controller.Admin2FAStats)
 				adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
 			}
+		}
+
+		enterpriseRoute := apiRouter.Group("/enterprise")
+		enterpriseRoute.Use(middleware.UserAuth(), middleware.DisableCache(), middleware.EnterpriseFeatureEnabled())
+		{
+			enterpriseRoute.GET("/self", controller.GetEnterpriseSelf)
+			enterpriseRoute.GET("/members", controller.ListEnterpriseMembers)
+			enterpriseRoute.POST("/members/:id/allocations", controller.AllocateEnterpriseQuota)
+			enterpriseRoute.POST("/members/:id/reclaims", controller.ReclaimEnterpriseQuota)
+			enterpriseRoute.POST("/members/:id/pause", controller.PauseEnterpriseMember)
+			enterpriseRoute.POST("/members/:id/resume", controller.ResumeEnterpriseMember)
+			enterpriseRoute.POST("/members/:id/remove", controller.RemoveEnterpriseMember)
 		}
 
 		// Subscription billing (plans, purchase, admin management)
