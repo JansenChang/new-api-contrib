@@ -14,14 +14,14 @@
 
 ## 已确认前提
 
-- 当前候选的主库模型为 40 张 allowlist 表；`logs` 是否属于主库取决于未知的 `LOG_SQL_DSN`，必须以 manifest 显式声明。
+- 当前候选的主库模型为 40 张 allowlist 表；已确认本次生产 SQLite 的 `logs` 与主库同文件，故 SQLite-34 profile 固定纳入 `logs`；其他源拓扑仍必须由 manifest 显式声明。
 - `migrateDB()` 不是纯 schema 建立器，带有运行期回填和企业补建；P-M2 不能复用它作为导入入口。
 - 新企业账本摘要的 PostgreSQL NUL 问题已修复；历史 NUL 行仍是失败关闭前置项。
-- 生产 `new-api` 运行时日志表明主库为 SQLite；版本、WAL、规模、日志库和写入者仍为 `UNKNOWN`。
+- SQLite-34 profile 已固定：34 张旧表必须按编译期 `TableSpec` 的列签名比较和显式复制；仅 `users.active_enterprise_id`、两张支付表的 6 个主体快照列以及 Root/Admin 衍生企业/Owner 关系由复制器确定性填充。`users.created_at=NULL` 固定映射为 `0`，不得取当前时间。
 
 ## 实施顺序
 
-1. 技术审阅本设计，确认“历史 NUL 一律失败关闭”、日志范围 manifest、40 表 allowlist 与不使用运行时 `AutoMigrate` 的边界。
+1. ✅ 技术审阅已补齐 SQLite-34-pre-enterprise 固定映射：34 表逐表范围、6 张目标新增表、7 个新增列、Root/Admin 确定性企业锚点和支付快照均已定义；确认“历史 NUL 一律失败关闭”、日志范围 manifest、40 表 allowlist 与不使用运行时 `AutoMigrate` 的边界。
 2. ✅ `codex/postgres-primary-copy-preflight` 完成纯预检骨架；`codex/postgres-primary-copy-static-profile` 转录 `SQLite-34` 34 张来源表的完整编译期列/索引签名，并强化候选 SHA、身份哈希、快照证明、SQLite+主日志范围与批次上限门禁；`codex/postgres-primary-copy-static-profile-hardening` 移除任意 profile 的导出校验入口，成功路径只能使用内置静态 profile；`codex/postgres-primary-copy-static-profile-baseline` 删除第二套表名常量并增加固定 34/40 表名与全签名 SHA-256 基线回归。切片只接收内存元数据快照，不打开连接、不执行 DDL/DML。
 3. ✅ `codex/postgres-primary-sqlite-metadata-collector` 新增只读 SQLite-34 采集器：仅接收调用方已打开的 `*sql.DB` 和 `context.Context`，按内置固定 profile 读取 `table_info`、`index_list`、`index_info` 与 `COUNT(*)`，缺表/列/索引漂移由现有 `Preflight` 失败关闭；合成 SQLite 回归未读取真实库。
 4. ✅ `codex/postgres-primary-sqlite-metadata-collector-hardening` 在采集前用固定只读 `main.sqlite_schema` 精确枚举 34 张业务表，过滤 SQLite 系统表；`IndexSpec`/`IndexMetadata` 增加并严格比较 `Partial`，按 PRAGMA `seq` 稳定排序索引及索引列；额外企业表、缺表、索引缺失和 partial 漂移均回归失败关闭。
@@ -38,7 +38,7 @@ go test ./... -run 'TestPostgresPrimaryMigration' -count=1 -timeout 120s
 git diff --check
 ```
 
-通过条件：AC-1 至 AC-6 有对应确定性合成回归；SQLite 与真实 MySQL fixture 的结果分开记录；每个失败用例证明无发布资格且不泄露原始值。`NOT_RUN` 必须保留生产数据、158 UAT、生产切换和真实外部系统。
+通过条件：SQLite-34 profile 的 5 项回归和 AC-1 至 AC-6 有对应确定性合成证据；SQLite 与真实 MySQL fixture 的结果分开记录；每个失败用例证明无发布资格且不泄露原始值。`NOT_RUN` 必须保留生产数据、158 UAT、生产切换和真实外部系统。
 
 ## 风险与停止条件
 

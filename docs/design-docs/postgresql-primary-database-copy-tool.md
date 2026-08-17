@@ -17,7 +17,7 @@ P-M2 的目标是提供一个运营者显式运行、一次性的 SQLite/MySQL �
 
 - FR-1: 复制器 MUST 是独立命令，只接受显式的非敏感 manifest 路径及由受管环境注入的源/目标连接信息；不得从应用启动、HTTP 路由或 `AutoMigrate` 自动触发。
 - FR-2: 复制器 MUST 仅接受 SQLite 或 MySQL 作为源、PostgreSQL 作为目标；源与目标标识相同、目标非 PostgreSQL、源类型未知、日志范围未声明、目标非空或源无法以只读方式连接时，MUST 在建立 schema/写入前拒绝。
-- FR-3: 复制范围 MUST 使用候选 SHA 固化的 40 张主库 allowlist、固定列映射和固定依赖顺序；不得通过动态表发现、`SELECT *`、GORM 结构体自动扫描或“跳过未知列”扩大范围。
+- FR-3: 复制范围 MUST 使用候选 SHA 固化的 40 张主库 allowlist、固定表/列签名、固定列映射和固定依赖顺序；SQLite metadata 只可与该编译期签名比较，绝不用于动态扩展 allowlist。不得通过动态表发现、`SELECT *`、GORM 结构体自动扫描或“跳过未知列”扩大范围。
 - FR-4: `logs` MUST 由 manifest 明确标记为 `primary`、`separate-retain`、`separate-migrate` 或 `clickhouse-retain`。未声明或与实际 `LOG_SQL_DSN` 拓扑不一致时 MUST 拒绝；ClickHouse 不属于复制器。
 - FR-5: 复制器 MUST 先在空专属 PostgreSQL 中以候选版本的确定顺序建立 schema，并保存表、列、主键、索引和 sequence 的非敏感清单；不得直接使用会写入业务数据的应用启动迁移流程建立目标。
 - FR-6: 每条来源记录 MUST 在写入前按目标列验证可空性、整数范围、布尔语义、时间精度、十进制精度、字符串长度、UTF-8、NUL 和 JSON。未知表/列、类型不兼容、非法值或目标不支持的来源语义 MUST 失败关闭，不得截断、替换、置零或跳过。
@@ -27,6 +27,7 @@ P-M2 的目标是提供一个运营者显式运行、一次性的 SQLite/MySQL �
 - FR-10: 复制器 MUST 在导入后验证逐表精确行数、主键集合摘要、逻辑引用、目标 schema/索引清单和关键聚合。关键聚合至少包括用户/Token 额度、订单/订阅状态、企业钱包/成员可用和预留/异常额度、企业账本 delta 与用量状态；任一不一致时目标 MUST 标记为不可发布。
 - FR-11: 报告 MUST 仅包含候选 SHA、数据库类型、表名、计数、摘要、阶段、耗时和 `table/primary-key-hash/column/reason` 失败定位；MUST NOT 写入或输出 DSN、原始用户文本、Key、OAuth/SMTP/支付字段或数据库行内容。
 - FR-12: 复制器 MUST 只在已验证停写的一致性源快照上运行。P-M2 的合成测试可自行构造 fixture；生产快照、写入冻结、备份和公开切换均不属于本分片。
+- FR-13: 候选启动验证前，复制器 MUST 验证已知启动回填为零：所有 `users.auth_version >= 1`，每个非空 `users.telegram_id` 均已有唯一、同属该用户的 Telegram `external_identity_claims`。候选启动若仍产生任意 DDL/DML，目标不可发布；不得把这些运行时副作用混入复制器。
 
 ## Non-Functional Requirements（非功能需求）
 
@@ -42,9 +43,9 @@ P-M2 的目标是提供一个运营者显式运行、一次性的 SQLite/MySQL �
 
 Given 来源不是 SQLite/MySQL、目标不是空 PostgreSQL、日志范围缺失或目标已有业务行，When 运行预检，Then 工具在任何 DDL/DML 前拒绝，报告只说明失败类别。
 
-### AC-2: SQLite 合成复制 (FR-3, FR-5, FR-6, FR-9, FR-10)
+### AC-2: SQLite 合成复制与候选静态启动 (FR-3, FR-5, FR-6, FR-9, FR-10, FR-13)
 
-Given 当前候选模型生成的合成 SQLite fixture 与空 PostgreSQL，When 执行复制，Then allowlist 内的表、显式主键、空值、时间、关键聚合、引用和 sequence 都精确通过，且候选启动不产生未批准的业务回填。
+Given 当前候选模型生成的合成 SQLite fixture 与空 PostgreSQL，When 执行复制并通过 `auth_version`/Telegram claim 预检后启动候选，Then allowlist 内的表、显式主键、空值、时间、关键聚合、引用和 sequence 都精确通过，候选启动不产生 DDL 或 DML；不满足已知启动前置条件时必须在启动前拒绝。
 
 ### AC-3: MySQL 合成复制 (FR-2, FR-6, FR-9, FR-10, NFR-1)
 
@@ -93,6 +94,46 @@ N/A — 工具不注册 HTTP、Relay 或管理 API。后续 CLI 只接受受管 
 | `TableSpec` | 表名、固定列名/类型/可空性/长度/主键、依赖序号、sequence 策略、JSON 规则 | 编译期固定，不接受动态扩展 |
 | `MigrationReport` | 阶段、表计数、摘要、聚合、schema/sequence 结论、失败定位 | 不含原始行、Key 或秘密 |
 | `FailureLocation` | 表名、主键哈希、列名、原因码 | 不含来源正文或主键原值 |
+
+## SQLite-34-pre-enterprise 固定映射
+
+本 profile 只对应 2026-08-18 已只读确认的生产基线：同一主/日志 SQLite 中恰有下列 34 张表，`logs` 属于主库范围；没有企业六表，`users` 没有 `active_enterprise_id`，`top_ups` 与 `subscription_orders` 没有支付主体快照列。完整的来源列/索引签名由 [SQLite-34 schema signature](postgresql-sqlite34-schema-signature.md) 固化；P-M2 必须将其转录为编译期 `TableSpec`，不能在运行时从该文档或来源 metadata 生成规则。它不是通用的“旧 SQLite”兼容模式。
+
+预检必须同时满足下列条件：
+
+1. 源表名集合与下表 34 项完全相同；缺表、额外表、企业表或任一新增列都拒绝。
+2. 每张旧表只允许 profile 编译期 `TableSpec` 固化的旧列签名（列名、SQLite 声明类型、`notnull`、主键序位、目标类型/长度/精度、索引和 sequence 策略）；同名旧列按名称显式读取、显式写入，保留原主键、`NULL`、时间和所有既有值。SQLite metadata 仅验证这一签名，不能生成或扩大它。不得使用 `SELECT *`、目标默认值、运行时 `AutoMigrate` 回填或当前时间替代来源值。
+3. 仅本节列出的 7 个目标新增列可由 profile 受控填充；其余任何目标列差异均拒绝。预检失败时目标不得执行 DDL 或 DML。
+
+| 34 张来源表 | 目标处理 |
+| --- | --- |
+| `abilities`、`auth_flows`、`authz_roles`、`casbin_rules`、`channels`、`checkins`、`custom_oauth_providers`、`external_identity_claims`、`logs`、`midjourneys`、`models`、`options`、`passkey_credentials`、`perf_metrics`、`prefill_groups`、`quota_data`、`redemptions`、`setups`、`subscription_plans`、`subscription_pre_consume_records`、`system_instances`、`system_task_locks`、`system_tasks`、`tasks`、`tokens`、`two_fa_backup_codes`、`two_fas`、`user_oauth_bindings`、`user_sessions`、`user_subscriptions`、`vendors` | 每个旧列同名显式复制；不补值、不重算、不重新生成 ID/时间。 |
+| `users` | 所有旧列同名显式复制；额外按下表填充 `active_enterprise_id`。 |
+| `top_ups` | 所有旧列同名显式复制；额外按下表填充 3 个支付主体快照列。 |
+| `subscription_orders` | 所有旧列同名显式复制；额外按下表填充 3 个支付主体快照列。 |
+
+候选目标的 40 表为上列 34 表，另加 `api_key_deliveries`、`enterprises`、`enterprise_memberships`、`enterprise_invitations`、`enterprise_ledgers`、`enterprise_usage_records`。这些新增表和新增列必须由 P-M2 的纯 schema 建立器和本 profile 写入；不得在导入后启动应用，以 `migrateDB()` 或 `migrateEnterpriseFoundation()` 隐式生成。
+
+| 目标对象 | 固定来源/填充值 | 失败关闭条件 |
+| --- | --- | --- |
+| `users.active_enterprise_id` | 接受角色集合固定为 Guest=`0`、User=`1`、Admin=`10`、Root=`100`；Guest/User 为 `0`，每个 Admin/Root（包括禁用状态）为其 `users.id`，与同 ID 的目标企业一致。 | ID 非正数或不能作为目标 `int`；角色不在固定集合。 |
+| `enterprises` | 只为来源 Root/Admin 各建一行：`id=owner_user_id=users.id`，`status=ACTIVE`，各额度/`closed_at=0`；`name=(display_name 非空 ? display_name : username) + " Enterprise"`；`created_at=updated_at=normalize(users.created_at)`。 | 名称为空、超过目标 `varchar(100)` 或时间/ID 不可表示；不得截断或使用当前时间。 |
+| `enterprise_memberships` | 只为上述 Owner 各建一行：`id=enterprise_id=user_id=users.id`，`role=OWNER`、`status=ACTIVE`，所有额度/自限/生命周期计数为 `0`，`allow_ips=''`，`joined_at=normalize(users.created_at)`。 | 同一 Owner 推导出多行、任一引用不能与已复制 `users`/`enterprises` 对齐。 |
+| `api_key_deliveries`、`enterprise_invitations`、`enterprise_ledgers`、`enterprise_usage_records` | 均为零行；基线没有可转换来源。 | 来源发现对应企业表/列、或实现尝试编造任何历史业务记录。 |
+| `top_ups.billing_subject_type`、`top_ups.billing_subject_id`、`top_ups.billing_enterprise_id` | 对每一历史行固定为 `personal`、`user_id`、`0`。 | `user_id <= 0`、不可表示、未引用已复制 `users.id`，或任何旧列/主键/金额/时间在复制中改变。 |
+| `subscription_orders.billing_subject_type`、`subscription_orders.billing_subject_id`、`subscription_orders.billing_enterprise_id` | 对每一历史行固定为 `personal`、`user_id`、`0`。 | `user_id <= 0`、不可表示、未引用已复制 `users.id`，或任何旧列/主键/金额/时间在复制中改变。 |
+
+`normalize(users.created_at)` 是 profile 的唯一时间规则：来源 `NULL` 映射为 `0`，非 `NULL` 保留原值；不得调用 `common.GetTimestamp()`。这使对同一 SQLite-34 快照导入两个独立空目标时，Root/Admin 企业、Owner membership、用户锚点与支付主体快照完全一致。
+
+### SQLite-34 profile 最小回归
+
+P-M2 开发必须先实现以下合成 SQLite 回归；不得用生产快照替代。
+
+1. `TestPostgresPrimaryMigrationSQLite34PreEnterpriseProfile`：34 表旧基线导入后，旧 34 表保留主键/字段，目标完整 40 表；仅 Root/Admin 有企业/Owner 关系，其他四张企业新增表为零行。
+2. `TestPostgresPrimaryMigrationSQLite34BillingSnapshotBackfill`：`top_ups`、`subscription_orders` 的旧行保留主键、金额和时间，且三列严格为 `personal,user_id,0`。
+3. `TestPostgresPrimaryMigrationSQLite34DeterministicAdminEnterprise`：同一 fixture 连续导入两个空目标，推导的企业/成员 ID、名称、时间、用户锚点完全相同；后续候选启动不得再修改这些行、支付快照、`auth_version` 或 `external_identity_claims`。`auth_version<1`、非空 Telegram 绑定缺少唯一 claim 的 fixture 必须在启动前拒绝。
+4. `TestPostgresPrimaryMigrationSQLite34ProfileRejectsDrift`：缺任一旧表/列、列签名不匹配、出现企业表/新增列、或有额外表/列时，预检失败且目标没有 DDL/DML；支付表的 `user_id<=0` 或孤儿引用同样拒绝。
+5. `TestPostgresPrimaryMigrationSQLite34ProfileRejectsUnrepresentableOwner`：Root/Admin 的 ID、名称或时间无法映射时失败关闭；覆盖 `users.created_at=NULL → 0`、非法角色拒绝和禁用 Admin/Root 仍确定性创建企业，绝不截断或采用当前时间。
 
 ## Out of Scope（非范围）
 

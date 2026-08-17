@@ -20,7 +20,7 @@
 - 2026-08-17 17:57Z 对 SSH 158 仅运行 Docker 容器、网络、挂载元数据和磁盘空间盘点：生产 `new-api`、`new-api-l1-test`、`mysql_db` 与 PostgreSQL UAT 资源可见；本次没有读取任何环境变量、DSN、数据库数据或卷内容，也没有执行写操作。
 - 生产 `new-api` 的启动日志仅筛选并返回了数据库类型行：2026-08-15 的本次容器启动报告 `SQL_DSN not set, using SQLite as database`。随后只读取了不含业务行的运行元数据：容器工作目录为 `/data`，默认 `one-api.db` 存在，`SQLITE_PATH` 与 `LOG_SQL_DSN` 均未设置。因此生产**主库和日志库均为同一 SQLite 文件**，`logs` 属于本次主库复制范围。
 - 对该 SQLite 文件以 `mode=ro`、`query_only=ON` 读取的元数据为：SQLite 3.40.1、`journal_mode=delete`、页大小 4096、18430 页、无 freelist、schema version 1236；文件约 75 MB。当前无 `.db-wal`/`.db-shm` 文件。这是单时点元数据，不等于一致性快照或停写证明。
-- 源 schema 当前有 34 张表，名称与候选基础模型清单一致，包含 `logs`，但没有企业六表。候选目标的企业表/新增列和确定性历史回填必须形成独立的 `SQLite-34-pre-enterprise` 映射规范后，才能开始复制器实现。
+- 源 schema 当前有 34 张表，名称与候选基础模型清单一致，包含 `logs`，但没有企业六表。候选目标的企业表/新增列和确定性历史回填已固定为 [`SQLite-34-pre-enterprise` 映射规范](../../design-docs/postgresql-primary-database-copy-tool.md#sqlite-34-pre-enterprise-固定映射)；P-M2 只能按该 profile 用合成 fixture 开发，不能让启动迁移猜测历史数据。
 - `new-api-pg-uat-net` 是 `internal=true`、`attachable=false` 的本地 bridge 网络，当前仅有 PostgreSQL 和两个候选应用，均未发布宿主机端口；它与生产 `new-api`、L1 测试、OpenCodex、MySQL 没有直接共享 Docker 网络。路径和网络隔离已获容器元数据证据。
 - 两个候选应用仍同时连接同一 UAT PostgreSQL 网络；Docker 元数据无法证明它们使用不同数据库、schema 或账号，因此不能排除并发 `AutoMigrate`/写入竞争。该 UAT 不得直接作为下一轮候选验收环境。
 - `mysql_db` 虽在运行，但它与生产 `new-api` 未共享已见 Docker 网络；不能据此判断 MySQL 是否为生产日志库。主库版本、SQLite WAL 状态、日志库、Redis 所有权、全部写入者、备份恢复和数据规模仍为 `UNKNOWN`。
@@ -45,7 +45,7 @@
 1. ✅ 在独立工作树设计源/目标范围、停写切换、数据/序列/类型/NUL 校验、UAT 脱敏、影子验证、恢复边界和不可自动化风险。
 2. ✅ P-M0（部分完成）：已只读盘点 SSH 158 的容器、网络、挂载元数据和磁盘空间；生产库类型/版本、日志库、实例/定时任务/回调写入者、备份恢复能力和 Redis keyspace 仍待在不暴露凭据、不读取数据的前提下确认。
 3. 进行中：P-M1 企业账本 NUL 兼容修复已进入候选 `codex/enterprise-f3b-pgcompat`（`b96f0650b`）；该候选的专用 PostgreSQL 合同已记录通过。历史 NUL 行转换/阻断设计与生产数据扫描仍未完成。
-4. 待 P-M1：单独设计、实现和测试 P-M2 一次性迁移器；使用合成 SQLite/MySQL fixture 后才进入 UAT。
+4. 进行中：P-M2 的 SQLite-34-pre-enterprise 映射设计已完成；接下来独立实现、测试一次性迁移器，先使用合成 SQLite/MySQL fixture 后才进入 UAT。
 5. 待 P-M2：在 158 的确认独立资源进行 P-M3 脱敏 UAT 演练；不得触碰生产。
 6. 待 P-M3 与人工批准：编写并评审生产 P-M4 Runbook，明确冻结窗口、实际目标、备份、放行和事故处理。
 
@@ -76,5 +76,5 @@ go test ./model -run '^$' -count=1
 ## 结果与未解决项
 
 - 已完成：迁移技术设计和实施顺序、P-M0 的容器级只读盘点；生产主/日志库为同一 SQLite 文件、运行时版本/日志模式/文件规模和 34 表基线已获只读证据。明确 `AutoMigrate` 不复制历史数据、UAT 不等于生产、没有全局写闸/CDC/自动回切这一事实边界。企业账本 PostgreSQL NUL 修复已进入 F3-B 候选并有专用合同证据。
-- 未运行：生产 SQLite 一致性快照、生产数据 NUL/编码扫描、`SQLite-34-pre-enterprise` 目标映射、SQLite/MySQL 实体迁移、完整写入者/备份/Redis 盘点、UAT 脱敏/出站验证、生产预检和生产切换。
-- 阻塞条件：生产写入边界仍 `UNKNOWN`；当前源为 34 表基线而候选包含企业目标表/新增列，映射和受控回填规则尚未设计；当前 UAT 有两个候选应用共用一个 PostgreSQL 容器，数据库级隔离未证实；历史 NUL 账本转换或失败关闭规则尚未设计。
+- 未运行：生产 SQLite 一致性快照、生产数据 NUL/编码扫描、SQLite/MySQL 实体迁移、完整写入者/备份/Redis 盘点、UAT 脱敏/出站验证、生产预检和生产切换。
+- 阻塞条件：生产写入边界仍 `UNKNOWN`；当前 UAT 有两个候选应用共用一个 PostgreSQL 容器，数据库级隔离未证实；历史 NUL 账本转换或失败关闭规则尚未设计。
