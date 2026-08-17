@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -12,6 +13,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+type enterpriseTaskResolutionRequest struct {
+	Outcome     string `json:"outcome"`
+	ActualQuota *int   `json:"actual_quota"`
+	Reason      string `json:"reason"`
+}
 
 func GetAllTask(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
@@ -58,6 +65,40 @@ func GetUserTask(c *gin.Context) {
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(tasksToDto(items, false))
 	common.ApiSuccess(c, pageInfo)
+}
+
+// ResolveEnterpriseTaskManualReview is deliberately a platform-admin action:
+// enterprise owners and members cannot release or settle an uncertain task.
+func ResolveEnterpriseTaskManualReview(c *gin.Context) {
+	taskID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || taskID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid task id"})
+		return
+	}
+	var request enterpriseTaskResolutionRequest
+	if err := c.ShouldBindJSON(&request); err != nil || request.ActualQuota == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid enterprise task resolution"})
+		return
+	}
+	outcome, err := model.ResolveEnterpriseTaskManualReview(taskID, c.GetInt("id"), request.Outcome, *request.ActualQuota, request.Reason)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !outcome.Replayed {
+		recordManageAudit(c, "enterprise.task_manual_resolution", map[string]interface{}{
+			"task_id":      taskID,
+			"outcome":      request.Outcome,
+			"actual_quota": *request.ActualQuota,
+			"reason":       request.Reason,
+			"usage_id":     outcome.UsageID,
+		})
+	} else {
+		// The immutable enterprise ledger is the authoritative audit record.
+		// Suppress middleware's generic audit on a no-op retry.
+		markAuditLogged(c)
+	}
+	common.ApiSuccess(c, gin.H{"enterprise_usage": outcome})
 }
 
 func tasksToDto(tasks []*model.Task, fillUser bool) []*dto.TaskDto {

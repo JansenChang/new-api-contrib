@@ -67,6 +67,10 @@ var EmailDefaultTokenEnabled = false
 // SinglePrimaryAPIKeyEnabled enables the complete ordinary-user single-key flow.
 // It is intentionally independent from the two legacy transition switches.
 var SinglePrimaryAPIKeyEnabled = false
+
+// EnterpriseBillingEnabled is the Root-only joint release gate for enterprise
+// funding. It stays false until C, D, E and B pass their combined acceptance.
+var EnterpriseBillingEnabled = false
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
 var LinuxDOOAuthEnabled = false
