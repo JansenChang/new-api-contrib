@@ -1,0 +1,52 @@
+# 企业管理核心 API（H1）执行计划
+
+状态：ACTIVE  
+负责人：Codex  
+更新时间：2026-08-17
+
+关联设计：[企业管理核心 API（H1）](../../design-docs/enterprise-management-core-api.md)。
+
+## 目标与非目标
+
+在独立分支交付受 `EnterpriseBillingEnabled` 保护的 Owner 指派、企业摘要、成员列表、真实额度划转/回收和成员生命周期 API。门默认保持关闭。
+
+不实现企业邀请邮件/注册交付、支付、订阅、Key、前端、发布门变更或生产部署。
+
+## 现状证据
+
+- B 已有成员暂停、恢复、排空移除与 Owner 三重一致性校验。
+- C1 已有事务化额度划转、回收、账本幂等和冲正。
+- H1 缺公开 Router/Controller、普通 User → Owner 原子指派，以及安全投影查询。
+
+## 修改范围
+
+预计只修改 Router、一个企业发布门 middleware、企业管理 model/service/controller、审计模板与相应定向测试；复用 B/C1，不直接更新额度汇总。
+
+## 风险与回滚
+
+- 门关闭路由仍可写：每个路由测试 403 与无副作用；不启用门。
+- 越权/跨企业读取：每次目标查询都绑定企业、成员角色和状态。
+- 资金不一致：仅调用 C1 命令，以幂等键回放或冲突拒绝。
+- 排空错误：仅调用 B，保持 DRAINING/人工处理，不改个人资产。
+
+## 实施步骤
+
+1. 根据 H1 规格补充定向失败测试。
+2. 实现发布门、Owner 指派和安全投影。
+3. 实现 Controller/Router/审计，保留关闭门。
+4. 运行定向 Go 回归、`git diff --check`；记录 SQLite、MySQL/PostgreSQL 与 UAT 的实际证据或 `NOT_RUN`。
+5. 自审 FR/AC，回写本计划和设计，独立提交后再申请整合。
+
+## 验证命令与通过条件
+
+```bash
+go test ./model ./service ./controller ./router -run 'TestEnterprise(Management|Membership|Ledger|AssetFreeze|Usage)' -count=1 -timeout 120s
+git diff --check
+```
+
+通过：每条 H1 路由关闭门无副作用；跨企业隔离；账本幂等；状态不触及平台身份/个人资产；未运行的跨数据库/UAT 明确标注。
+
+## 结果与未解决项
+
+- 2026-08-17：H1 规格已从完整 H 中分离，以避免猜测企业邀请的邮件和建户交付契约。
+- 尚未实现、未运行测试、未部署、未开启企业发布门。
