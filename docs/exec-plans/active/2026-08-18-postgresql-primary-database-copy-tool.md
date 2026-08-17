@@ -1,6 +1,6 @@
 # PostgreSQL 主库一次性复制器（P-M2）：执行计划
 
-状态：DRAFT — 等待技术审阅；仅可开发合成 fixture
+状态：ACTIVE — P-M2 SQLite-34 元数据采集器切片完成；复制与 UAT 仍未开始
 
 负责人：Codex
 
@@ -23,9 +23,10 @@
 
 1. 技术审阅本设计，确认“历史 NUL 一律失败关闭”、日志范围 manifest、40 表 allowlist 与不使用运行时 `AutoMigrate` 的边界。
 2. ✅ `codex/postgres-primary-copy-preflight` 完成纯预检骨架；`codex/postgres-primary-copy-static-profile` 转录 `SQLite-34` 34 张来源表的完整编译期列/索引签名，并强化候选 SHA、身份哈希、快照证明、SQLite+主日志范围与批次上限门禁；`codex/postgres-primary-copy-static-profile-hardening` 移除任意 profile 的导出校验入口，成功路径只能使用内置静态 profile；`codex/postgres-primary-copy-static-profile-baseline` 删除第二套表名常量并增加固定 34/40 表名与全签名 SHA-256 基线回归。切片只接收内存元数据快照，不打开连接、不执行 DDL/DML。
-3. 先写 SQLite → PostgreSQL 合成回归，再接入真实 MySQL 驱动 fixture；两者都覆盖 NUL/UTF-8/JSON/范围/sequence/企业账务失败关闭。
-4. 候选启动验证不引入未批准回填；逐表、引用和聚合对账通过后，提交独立分支并回写证据。
-5. 仅在 P-M2 合成合同完成且另获授权后，做 P-M3 的生产快照脱敏 UAT；当前 158 的双 UAT 应用共享 PostgreSQL 容器，数据库级隔离确认前不得使用。
+3. ✅ `codex/postgres-primary-sqlite-metadata-collector` 新增只读 SQLite-34 采集器：仅接收调用方已打开的 `*sql.DB` 和 `context.Context`，按内置固定 profile 读取 `table_info`、`index_list`、`index_info` 与 `COUNT(*)`，缺表/列/索引漂移由现有 `Preflight` 失败关闭；合成 SQLite 回归未读取真实库。
+4. 待后续切片：先写 SQLite → PostgreSQL 合成复制回归，再接入真实 MySQL 驱动 fixture；两者都覆盖 NUL/UTF-8/JSON/范围/sequence/企业账务失败关闭。
+5. 候选启动验证不引入未批准回填；逐表、引用和聚合对账通过后，提交独立分支并回写证据。
+6. 仅在 P-M2 合成合同完成且另获授权后，做 P-M3 的生产快照脱敏 UAT；当前 158 的双 UAT 应用共享 PostgreSQL 容器，数据库级隔离确认前不得使用。
 
 ## 验证命令与通过条件
 
@@ -53,3 +54,4 @@ git diff --check
 - 已完成：固定 `e451c93f1d44a1a84f9bab07937510458c8bd642` 候选的 34 张表完整列签名与索引签名转录；表/列/类型/notnull/PK/索引漂移和目标非空均失败关闭；manifest 要求不同的源/目标身份哈希、非空快照证明、SQLite 源与 `primary` 日志范围；外部调用方不能注入自定义 profile 绕过内置签名；固定基线回归锁定 34 张来源表、40 张候选目标表及签名指纹 `a307c47470b78e8b4f540c580994db2870970fcd57113a877e7a11e221ec8f17`。
 - 验证：`go build ./pkg/postgresmigration`、`git diff --check`。定向 `go test` 在本机 Go 测试进程未返回，结果记为 `UNKNOWN`，未据此宣称通过。
 - `NOT_RUN`：实际 SQLite/MySQL 连接读取、PostgreSQL schema/DML、完整 SQLite-34 复制、MySQL 合成 fixture、全模型 PostgreSQL 合同、158 UAT、生产快照、生产切换。
+- 本切片新增：采集器只读合成 SQLite 回归已编写；本机 Go 测试进程在 30 秒内未返回（与并发测试进程争用），结果记为 `UNKNOWN`，未据此宣称通过。
