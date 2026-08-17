@@ -76,7 +76,10 @@ export function PrimaryApiKeyCard() {
           if (!proofToken) {
             throw new Error(t('Verification proof was not returned'))
           }
-          const response = await rotatePrimaryApiKey(proofToken)
+          if (!key) {
+            throw new Error(t('API Key was not returned'))
+          }
+          const response = await rotatePrimaryApiKey(proofToken, key.id)
           if (!response.success) {
             throw new Error(response.message || t('Failed to reset API key'))
           }

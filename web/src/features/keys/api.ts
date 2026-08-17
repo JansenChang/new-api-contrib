@@ -108,11 +108,19 @@ export async function updateApiKeyStatus(
   return res.data
 }
 
-/** Rotate the ordinary user's single primary API key. */
+/** Rotate one owned API key after a short-lived security proof. */
 export async function rotatePrimaryApiKey(
-  proofToken: string
-): Promise<ApiResponse<{ key?: string; full_key?: string }>> {
-  const res = await api.post('/api/user/rotate-api-key', undefined, {
+  proofToken: string,
+  tokenId: number
+): Promise<
+  ApiResponse<{
+    delivery_id?: number
+    delivery_status?: 'pending' | 'sent'
+    key?: string
+    full_key?: string
+  }>
+> {
+  const res = await api.post('/api/user/rotate-api-key', { token_id: tokenId }, {
     headers: { 'X-Security-Proof': proofToken },
   })
   return res.data

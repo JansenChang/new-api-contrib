@@ -47,6 +47,7 @@ func InitOptionMap() {
 	common.OptionMap["APIKeyLoginEnabled"] = strconv.FormatBool(common.APIKeyLoginEnabled)
 	common.OptionMap["EmailDefaultTokenEnabled"] = strconv.FormatBool(common.EmailDefaultTokenEnabled)
 	common.OptionMap["SinglePrimaryAPIKeyEnabled"] = strconv.FormatBool(common.SinglePrimaryAPIKeyEnabled)
+	common.OptionMap["EnterpriseBillingEnabled"] = strconv.FormatBool(common.EnterpriseBillingEnabled)
 	common.OptionMap["EmailVerificationEnabled"] = strconv.FormatBool(common.EmailVerificationEnabled)
 	common.OptionMap["GitHubOAuthEnabled"] = strconv.FormatBool(common.GitHubOAuthEnabled)
 	common.OptionMap["LinuxDOOAuthEnabled"] = strconv.FormatBool(common.LinuxDOOAuthEnabled)
@@ -419,6 +420,8 @@ func updateOptionMap(key string, value string) (err error) {
 				common.APIKeyLoginEnabled = true
 				common.OptionMap["APIKeyLoginEnabled"] = "true"
 			}
+		case "EnterpriseBillingEnabled":
+			common.EnterpriseBillingEnabled = boolValue
 		case "EmailVerificationEnabled":
 			common.EmailVerificationEnabled = boolValue
 		case "GitHubOAuthEnabled":

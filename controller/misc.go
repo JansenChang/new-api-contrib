@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -414,15 +416,39 @@ func SendAPIKeyResetEmail(c *gin.Context) {
 		return
 	}
 	if err := common.Validate.Var(email, "required,email"); err == nil && common.SinglePrimaryAPIKeyEnabled {
-		if user, err := model.GetUniqueUserByEmail(email); err == nil && user.Status == common.UserStatusEnabled && user.Role == common.RoleCommonUser {
-			token, flow, allowed, flowErr := model.CreateAPIKeyResetFlow(user.Id, time.Now().Add(time.Duration(common.VerificationValidMinutes)*time.Minute))
-			if flowErr == nil && allowed {
-				link := fmt.Sprintf("%s/reset-api-key?email=%s&token=%s", strings.TrimRight(system_setting.ServerAddress, "/"), url.QueryEscape(email), url.QueryEscape(token))
-				content := fmt.Sprintf("<p>您好，您正在重置 %s API Key。</p><p>点击 <a href='%s'>此处</a> 完成重置。</p><p>如果链接无法点击，请复制以下地址：<br>%s</p><p>链接 %d 分钟内有效；完成后旧 Key 将立即失效。</p>", common.SystemName, link, link, common.VerificationValidMinutes)
-				if err := common.SendEmail(fmt.Sprintf("%s API Key 重置", common.SystemName), email, content); err != nil {
-					_ = model.InvalidateAuthFlow(flow.Id)
-					logger.LogWarn(c.Request.Context(), fmt.Sprintf("failed to send API key reset email: %v", err))
-					model.RecordOperationAuditLog(user.Id, "API key recovery email delivery failed", c.ClientIP(), "user.api_key_recovery_delivery_failed", map[string]interface{}{"user_id": user.Id}, nil, nil)
+		if user, err := model.GetUniqueUserByEmail(email); err == nil && user.Status == common.UserStatusEnabled {
+			if delivery, token, err := model.GetLatestPendingAPIKeyDeliveryForUser(user.Id); err == nil {
+				// A previous rotation already invalidated the old key. Recovery must
+				// resend the same new key, never rotate a different token.
+				_ = sendAPIKeyDelivery(delivery, token)
+			} else if errors.Is(err, model.ErrAPIKeyDeliveryNotFound) {
+				expiresAt := time.Now().Add(time.Duration(common.VerificationValidMinutes) * time.Minute)
+				switch user.Role {
+				case common.RoleCommonUser:
+					token, flow, allowed, flowErr := model.CreateAPIKeyResetFlow(user.Id, expiresAt)
+					if flowErr == nil && allowed {
+						link := apiKeyResetLink(email, token)
+						content := fmt.Sprintf("<p>您好，您正在重置 %s API Key。</p><p>点击 <a href='%s'>此处</a> 完成重置。</p><p>如果链接无法点击，请复制以下地址：<br>%s</p><p>链接 %d 分钟内有效；完成后旧 Key 将立即失效。</p>", common.SystemName, link, link, common.VerificationValidMinutes)
+						if err := common.SendEmail(fmt.Sprintf("%s API Key 重置", common.SystemName), email, content); err != nil {
+							_ = model.InvalidateAuthFlow(flow.Id)
+							logger.LogWarn(c.Request.Context(), "API key recovery email delivery failed")
+							model.RecordOperationAuditLog(user.Id, "API key recovery email delivery failed", c.ClientIP(), "user.api_key_recovery_delivery_failed", map[string]interface{}{"user_id": user.Id}, nil, nil)
+						}
+					}
+				case common.RoleAdminUser, common.RoleRootUser:
+					links, allowed, flowErr := model.CreatePrivilegedAPIKeyResetFlows(user.Id, expiresAt)
+					if flowErr == nil && allowed {
+						content := privilegedAPIKeyResetEmail(email, links)
+						if err := common.SendEmail(fmt.Sprintf("%s API Key 重置", common.SystemName), email, content); err != nil {
+							for _, link := range links {
+								if flow, flowErr := model.GetAuthFlow(link.Token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeAPIKeyReset, UserId: user.Id}); flowErr == nil {
+									_ = model.InvalidateAuthFlow(flow.Id)
+								}
+							}
+							logger.LogWarn(c.Request.Context(), "privileged API key recovery email delivery failed")
+							model.RecordOperationAuditLog(user.Id, "API key recovery email delivery failed", c.ClientIP(), "user.api_key_recovery_delivery_failed", map[string]interface{}{"user_id": user.Id}, nil, nil)
+						}
+					}
 				}
 			}
 		}
@@ -430,51 +456,119 @@ func SendAPIKeyResetEmail(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
+func apiKeyResetLink(email, token string) string {
+	return fmt.Sprintf("%s/reset-api-key?email=%s&token=%s", strings.TrimRight(system_setting.ServerAddress, "/"), url.QueryEscape(email), url.QueryEscape(token))
+}
+
+// privilegedAPIKeyResetEmail provides one deliberate selection link per Key.
+// The target ID is deliberately absent from every URL and request body: it is
+// bound to the corresponding opaque AuthFlow on the server.
+func privilegedAPIKeyResetEmail(email string, links []model.APIKeyResetFlowLink) string {
+	items := make([]string, 0, len(links))
+	for _, link := range links {
+		name := strings.TrimSpace(link.Name)
+		if name == "" {
+			name = fmt.Sprintf("API Key #%d", link.TokenId)
+		}
+		resetLink := apiKeyResetLink(email, link.Token)
+		items = append(items, fmt.Sprintf("<li><a href='%s'>重置 %s</a></li>", resetLink, html.EscapeString(name)))
+	}
+	return fmt.Sprintf("<p>您好，您正在重置 %s API Key。</p><p>请选择需要轮换的 Key；点击链接后仍需在确认页完成重置。</p><ul>%s</ul><p>每个链接 %d 分钟内有效，完成后对应旧 Key 将立即失效。</p>", common.SystemName, strings.Join(items, ""), common.VerificationValidMinutes)
+}
+
 type APIKeyResetRequest struct {
 	Email string `json:"email"`
 	Token string `json:"token"`
 }
 
-// RotatePrimaryAPIKey rotates an authenticated ordinary user's sole API key.
-// A live dashboard session alone is insufficient: callers must first present a
-// short-lived 2FA/Passkey security proof bound to that session.
+type RotateAPIKeyRequest struct {
+	TokenId int `json:"token_id"`
+}
+
+var sendAPIKeyDeliveryEmail = common.SendEmail
+
+// sendAPIKeyDelivery sends only the current target token key. It returns the
+// intentionally small public state and never logs the raw SMTP error or key.
+func sendAPIKeyDelivery(delivery *model.APIKeyDelivery, token *model.Token) string {
+	if delivery == nil || token == nil || token.GetFullKey() == "" {
+		return "pending"
+	}
+	allowed, err := model.TryStartAPIKeyDeliveryAttempt(delivery.Id)
+	if err != nil || !allowed {
+		return "pending"
+	}
+	content := fmt.Sprintf("<p>您的 %s API Key 已重置，旧 Key 已立即失效。</p><p>请妥善保存新的 API Key：</p><p><strong>%s</strong></p><p>如非本人操作，请立即联系管理员。</p>", common.SystemName, primaryAPIKeyForUser(token.GetFullKey()))
+	if err := sendAPIKeyDeliveryEmail(fmt.Sprintf("%s API Key 已重置", common.SystemName), delivery.Email, content); err != nil {
+		_ = model.RecordAPIKeyDeliveryFailure(delivery.Id, "SMTP_SEND_FAILED")
+		return "pending"
+	}
+	if err := model.MarkAPIKeyDeliveryDelivered(delivery.Id); err != nil {
+		return "pending"
+	}
+	return "sent"
+}
+
+// RotatePrimaryAPIKey rotates the authenticated user's selected key. Ordinary
+// users retain the no-body compatibility path because their sole Token is the
+// target; Root/Admin must select one of their own Tokens.
 func RotatePrimaryAPIKey(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
-	if !common.SinglePrimaryAPIKeyEnabled || c.GetInt("role") != common.RoleCommonUser {
-		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "当前账户不支持主 API Key 轮换"})
+	if !common.SinglePrimaryAPIKeyEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "当前账户不支持 API Key 轮换"})
 		return
 	}
 	if !middleware.RequireSecurityProof(c, securityProofScopePrimaryKeyRotate, []string{secureVerificationMethod2FA, secureVerificationMethodPasskey}) {
 		return
 	}
+	var req RotateAPIKeyRequest
+	if c.Request.ContentLength > 0 {
+		if err := common.DecodeJson(c.Request.Body, &req); err != nil {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+	}
 	userID := c.GetInt("id")
-	token, err := model.RotatePrimaryTokenByUserID(userID)
+	token, delivery, err := model.RotateAPIKeyForDelivery(userID, req.TokenId)
 	if err != nil {
-		var deliveryErr *model.PrimaryTokenRotationDeliveryError
-		if errors.As(err, &deliveryErr) && deliveryErr.FullKey() != "" {
-			model.RecordOperationAuditLog(userID, "Primary API key rotation committed with delivery warning", c.ClientIP(), "user.primary_api_key_rotation_delivery_warning", map[string]interface{}{"user_id": userID}, nil, nil)
-			c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{
-				"full_key": primaryAPIKeyForUser(deliveryErr.FullKey()),
-				"warning":  deliveryErr.Warning(),
-			}})
-			return
-		}
-		if token != nil && token.GetFullKey() != "" {
-			model.RecordOperationAuditLog(userID, "Primary API key rotation committed with unknown delivery warning", c.ClientIP(), "user.primary_api_key_rotation_delivery_warning", map[string]interface{}{"user_id": userID}, nil, nil)
-			c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{
-				"full_key": primaryAPIKeyForUser(token.GetFullKey()),
-				"warning":  "API Key 已生成，但安全同步尚未完成；请保存此 Key 并重新登录。如无法登录，请使用邮箱找回。",
-			}})
-			return
-		}
 		common.ApiError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"full_key": primaryAPIKeyForUser(token.GetFullKey())}})
+	deliveryStatus := sendAPIKeyDelivery(delivery, token)
+	warning := ""
+	if err := model.FinalizePrimaryTokenRotation(userID, token, "api_key_rotated"); err != nil {
+		warning = "API Key 已生成，但安全同步尚未完成；请保存此 Key 并重新登录。如无法登录，请使用邮箱找回。"
+	}
+	model.RecordOperationAuditLog(userID, "API key rotated", c.ClientIP(), "user.api_key_rotated", map[string]interface{}{"token_id": token.Id, "delivery_id": delivery.Id}, nil, nil)
+	data := gin.H{"delivery_id": delivery.Id, "delivery_status": deliveryStatus, "full_key": primaryAPIKeyForUser(token.GetFullKey())}
+	if warning != "" {
+		data["warning"] = warning
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": data})
 }
 
-// ResetAPIKey consumes a recovery flow and rotates the user's primary key.
-// The full key is returned only in this one response and never sent by email.
+func ResendAPIKeyDelivery(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
+	if !middleware.RequireSecurityProof(c, securityProofScopePrimaryKeyRotate, []string{secureVerificationMethod2FA, secureVerificationMethodPasskey}) {
+		return
+	}
+	deliveryID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	userID := c.GetInt("id")
+	delivery, token, err := model.GetPendingAPIKeyDeliveryForUser(userID, deliveryID)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"success": false, "code": "DELIVERY_NOT_OWNED", "message": "待交付记录不可用"})
+		return
+	}
+	deliveryStatus := sendAPIKeyDelivery(delivery, token)
+	model.RecordOperationAuditLog(userID, "API key delivery resent", c.ClientIP(), "user.api_key_delivery_resent", map[string]interface{}{"token_id": token.Id, "delivery_id": delivery.Id}, nil, nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"delivery_id": delivery.Id, "delivery_status": deliveryStatus}})
+}
+
+// ResetAPIKey consumes a recovery flow and rotates the ordinary user's sole
+// key. Its successful response and the email both carry the new key once.
 func ResetAPIKey(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
 	c.Header("Pragma", "no-cache")
@@ -489,20 +583,33 @@ func ResetAPIKey(c *gin.Context) {
 		return
 	}
 	var rotated *model.Token
+	var delivery *model.APIKeyDelivery
 	var err error
 	flow, err := model.ConsumeAuthFlowWithAction(req.Token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeAPIKeyReset}, func(tx *gorm.DB, flow *model.AuthFlow) error {
 		var user model.User
-		if err := tx.Where("id = ? AND LOWER(email) = ?", flow.UserId, req.Email).First(&user).Error; err != nil || user.Status != common.UserStatusEnabled || user.Role != common.RoleCommonUser {
+		if err := tx.Where("id = ? AND LOWER(email) = ?", flow.UserId, req.Email).First(&user).Error; err != nil || user.Status != common.UserStatusEnabled {
 			return model.ErrAuthFlowInvalid
 		}
-		rotated, err = model.RotatePrimaryTokenByUserIDTx(tx, user.Id)
-		if err != nil {
-			return err
+		targetTokenID, targetErr := model.APIKeyResetFlowTargetTokenID(flow)
+		if targetErr != nil {
+			return targetErr
 		}
-		_, err = model.IncrementUserAuthVersionWithTx(tx, user.Id)
+		switch user.Role {
+		case common.RoleCommonUser:
+			if targetTokenID != 0 {
+				return model.ErrAuthFlowInvalid
+			}
+		case common.RoleAdminUser, common.RoleRootUser:
+			if targetTokenID <= 0 {
+				return model.ErrAuthFlowInvalid
+			}
+		default:
+			return model.ErrAuthFlowInvalid
+		}
+		rotated, delivery, err = model.RotateAPIKeyForDeliveryTx(tx, user.Id, targetTokenID)
 		return err
 	})
-	if err != nil || flow == nil || rotated == nil {
+	if err != nil || flow == nil || rotated == nil || delivery == nil {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordResetLinkInvalid)
 		return
 	}
@@ -517,12 +624,8 @@ func ResetAPIKey(c *gin.Context) {
 		model.RecordOperationAuditLog(flow.UserId, "API key reset committed with delivery warning", c.ClientIP(), "user.api_key_reset_delivery_warning", map[string]interface{}{"user_id": flow.UserId}, nil, nil)
 	}
 	model.RecordOperationAuditLog(flow.UserId, "Reset primary API key", c.ClientIP(), "user.api_key_reset", map[string]interface{}{"user_id": flow.UserId}, nil, nil)
-	if user, err := model.GetUserById(flow.UserId, false); err == nil && user.Email != "" {
-		if err := common.SendEmail(fmt.Sprintf("%s API Key 已重置", common.SystemName), user.Email, "<p>您的 API Key 已重置，旧 Key 已立即失效。如非本人操作，请立即联系管理员。</p>"); err != nil {
-			logger.LogWarn(c.Request.Context(), fmt.Sprintf("failed to send API key reset notification: %v", err))
-		}
-	}
-	data := gin.H{"full_key": primaryAPIKeyForUser(rotated.GetFullKey())}
+	deliveryStatus := sendAPIKeyDelivery(delivery, rotated)
+	data := gin.H{"delivery_id": delivery.Id, "delivery_status": deliveryStatus, "full_key": primaryAPIKeyForUser(rotated.GetFullKey())}
 	if deliveryWarning != "" {
 		data["warning"] = deliveryWarning
 	}

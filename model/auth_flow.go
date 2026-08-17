@@ -74,6 +74,22 @@ type AuthFlowMatch struct {
 	SessionId string
 }
 
+// APIKeyResetFlowPayload is persisted only on a recovery flow. A non-zero
+// TokenId is a server-selected recovery target for a privileged multi-key
+// account; it is never accepted from the anonymous reset request.
+type APIKeyResetFlowPayload struct {
+	TokenId int    `json:"token_id,omitempty"`
+	BatchId string `json:"batch_id,omitempty"`
+}
+
+// APIKeyResetFlowLink is an opaque reset flow paired with the non-secret
+// label needed to render a privileged user's email selection list.
+type APIKeyResetFlowLink struct {
+	Token   string
+	TokenId int
+	Name    string
+}
+
 func applyAuthFlowMatch(query *gorm.DB, token string, match AuthFlowMatch) *gorm.DB {
 	query = query.Where("token_hash = ? AND purpose = ?", authFlowTokenHash(token), match.Purpose)
 	if match.Provider != "" {
@@ -161,6 +177,98 @@ func CreateAPIKeyResetFlow(userID int, expiresAt time.Time) (token string, flow 
 		return "", nil, false, err
 	}
 	return token, flow, allowed, nil
+}
+
+// CreatePrivilegedAPIKeyResetFlows creates one short-lived confirmation flow
+// per existing Key. The target is stored in each server-side flow Payload, so
+// an anonymous client can never choose an arbitrary token_id in its request.
+func CreatePrivilegedAPIKeyResetFlows(userID int, expiresAt time.Time) (links []APIKeyResetFlowLink, allowed bool, err error) {
+	if userID <= 0 || expiresAt.IsZero() || !expiresAt.After(time.Now()) {
+		return nil, false, ErrAuthFlowInvalid
+	}
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var user User
+		if err := lockForUpdate(tx).Where("id = ?", userID).First(&user).Error; err != nil {
+			return err
+		}
+		if user.Role != common.RoleAdminUser && user.Role != common.RoleRootUser {
+			return ErrAuthFlowInvalid
+		}
+		now := time.Now()
+		var active int64
+		if err := tx.Model(&AuthFlow{}).Where("user_id = ? AND purpose = ? AND consumed_at IS NULL AND expires_at > ?", userID, AuthFlowPurposeAPIKeyReset, now).Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			return nil
+		}
+
+		var recent []AuthFlow
+		if err := tx.Where("user_id = ? AND purpose = ? AND created_at > ?", userID, AuthFlowPurposeAPIKeyReset, now.Add(-10*time.Minute)).Find(&recent).Error; err != nil {
+			return err
+		}
+		recentBatches := make(map[string]struct{}, len(recent))
+		for _, flow := range recent {
+			var payload APIKeyResetFlowPayload
+			if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil || payload.BatchId == "" {
+				recentBatches[fmt.Sprintf("legacy-%d", flow.Id)] = struct{}{}
+				continue
+			}
+			recentBatches[payload.BatchId] = struct{}{}
+		}
+		if len(recentBatches) >= 3 {
+			return nil
+		}
+
+		var tokens []Token
+		if err := lockForUpdate(tx).Where("user_id = ?", userID).Order("id ASC").Find(&tokens).Error; err != nil {
+			return err
+		}
+		if len(tokens) == 0 {
+			return ErrAuthFlowInvalid
+		}
+		batchID := fmt.Sprintf("%d-%s", now.UnixNano(), common.GetRandomString(12))
+		links = make([]APIKeyResetFlowLink, 0, len(tokens))
+		for _, target := range tokens {
+			payload, err := common.Marshal(APIKeyResetFlowPayload{TokenId: target.Id, BatchId: batchID})
+			if err != nil {
+				return err
+			}
+			flowToken, _, err := createAuthFlow(tx, AuthFlowCreate{
+				Purpose:   AuthFlowPurposeAPIKeyReset,
+				UserId:    userID,
+				Payload:   string(payload),
+				ExpiresAt: expiresAt,
+			})
+			if err != nil {
+				return err
+			}
+			links = append(links, APIKeyResetFlowLink{Token: flowToken, TokenId: target.Id, Name: target.Name})
+		}
+		allowed = true
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return links, allowed, nil
+}
+
+// APIKeyResetFlowTargetTokenID returns the privileged recovery target bound
+// by the server when the Flow was created. Empty legacy payloads remain the
+// ordinary single-Key recovery flow and therefore return zero.
+func APIKeyResetFlowTargetTokenID(flow *AuthFlow) (int, error) {
+	if flow == nil || strings.TrimSpace(flow.Payload) == "" {
+		return 0, nil
+	}
+	var payload APIKeyResetFlowPayload
+	if err := common.UnmarshalJsonStr(flow.Payload, &payload); err != nil {
+		return 0, ErrAuthFlowInvalid
+	}
+	if payload.TokenId <= 0 {
+		return 0, nil
+	}
+	return payload.TokenId, nil
 }
 
 // InvalidateAuthFlow marks an undelivered flow as consumed without retaining

@@ -67,6 +67,10 @@ var EmailDefaultTokenEnabled = false
 // SinglePrimaryAPIKeyEnabled enables the complete ordinary-user single-key flow.
 // It is intentionally independent from the two legacy transition switches.
 var SinglePrimaryAPIKeyEnabled = false
+
+// EnterpriseBillingEnabled releases C2/D/B/E together. It must stay false
+// until their isolated UAT gate has passed.
+var EnterpriseBillingEnabled = false
 var EmailVerificationEnabled = false
 var GitHubOAuthEnabled = false
 var LinuxDOOAuthEnabled = false

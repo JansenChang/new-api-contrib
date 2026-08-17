@@ -40,7 +40,7 @@ func setupAPIKeyLoginTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, model.InitDB())
 	initializedDB := model.DB
 	db := model.DB
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.UserSession{}, &model.TwoFA{}, &model.AuthFlow{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.UserSession{}, &model.TwoFA{}, &model.AuthFlow{}, &model.APIKeyDelivery{}))
 	model.DB, model.LOG_DB = db, db
 	common.RedisEnabled = false
 	common.APIKeyLoginEnabled = true

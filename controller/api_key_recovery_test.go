@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,9 @@ func TestResetAPIKeyConsumesFlowAndCannotReplay(t *testing.T) {
 	assert.True(t, response.Success)
 	assert.NotEmpty(t, response.Data.FullKey)
 	assert.NotEqual(t, "recover-old-key", response.Data.FullKey)
+	var delivery model.APIKeyDelivery
+	require.NoError(t, db.Where("user_id = ?", user.Id).First(&delivery).Error)
+	assert.Equal(t, model.APIKeyDeliveryStatusPending, delivery.Status)
 
 	second := call()
 	assert.Contains(t, second.Body.String(), `"success":false`)
@@ -98,4 +102,44 @@ func TestSendAPIKeyResetEmailUsesFrontendRoute(t *testing.T) {
 	var flow model.AuthFlow
 	require.NoError(t, db.Where("user_id = ? AND purpose = ?", user.Id, model.AuthFlowPurposeAPIKeyReset).First(&flow).Error)
 	assert.NotNil(t, flow.ConsumedAt, "delivery failure must invalidate the flow")
+}
+
+func TestResetAPIKeyForPrivilegedFlowRotatesOnlyServerBoundToken(t *testing.T) {
+	db := setupAPIKeyLoginTestDB(t)
+	user := createAPIKeyLoginUser(t, db, "root-recovery-first-old")
+	user.Email = "root-recovery@example.com"
+	user.Role = common.RoleRootUser
+	require.NoError(t, db.Model(user).Updates(map[string]any{"email": user.Email, "role": user.Role}).Error)
+	var first model.Token
+	require.NoError(t, db.Where("user_id = ?", user.Id).First(&first).Error)
+	second := &model.Token{UserId: user.Id, Name: "second", Key: "root-recovery-second-old", Status: common.TokenStatusEnabled, CreatedTime: common.GetTimestamp(), AccessedTime: common.GetTimestamp(), ExpiredTime: -1, UnlimitedQuota: true}
+	require.NoError(t, db.Create(second).Error)
+
+	links, allowed, err := model.CreatePrivilegedAPIKeyResetFlows(user.Id, time.Now().Add(time.Minute))
+	require.NoError(t, err)
+	require.True(t, allowed)
+	var target string
+	for _, link := range links {
+		if link.TokenId == second.Id {
+			target = link.Token
+		}
+	}
+	require.NotEmpty(t, target)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/user/reset-api-key", strings.NewReader(`{"email":"root-recovery@example.com","token":"`+target+`","token_id":`+strconv.Itoa(first.Id)+`}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	ResetAPIKey(c)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"success":true`)
+
+	var savedFirst, savedSecond model.Token
+	require.NoError(t, db.First(&savedFirst, first.Id).Error)
+	require.NoError(t, db.First(&savedSecond, second.Id).Error)
+	assert.Equal(t, "root-recovery-first-old", savedFirst.Key)
+	assert.NotEqual(t, "root-recovery-second-old", savedSecond.Key)
+	var delivery model.APIKeyDelivery
+	require.NoError(t, db.Where("user_id = ?", user.Id).First(&delivery).Error)
+	assert.Equal(t, second.Id, delivery.TokenId)
 }
