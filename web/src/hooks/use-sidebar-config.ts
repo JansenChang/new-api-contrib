@@ -22,12 +22,12 @@ import type { NavGroup, NavItem } from '@/components/layout/types'
 import { useStatus } from '@/hooks/use-status'
 import { useAuthStore } from '@/stores/auth-store'
 
-type SidebarSectionConfig = {
+export type SidebarSectionConfig = {
   enabled: boolean
   [key: string]: boolean
 }
 
-type SidebarModulesAdminConfig = Record<string, SidebarSectionConfig>
+export type SidebarModulesAdminConfig = Record<string, SidebarSectionConfig>
 
 // User-layer config is shape-identical to admin, but may be null
 // to signal "no narrowing" (empty/invalid/legacy users).
@@ -137,6 +137,18 @@ function parseSidebarConfig(
     console.error('Failed to parse sidebar modules configuration')
     return DEFAULT_SIDEBAR_MODULES
   }
+}
+
+export function useSidebarModulesAdminConfig(): SidebarModulesAdminConfig {
+  const { status } = useStatus()
+
+  return useMemo(
+    () =>
+      parseSidebarConfig(
+        status?.SidebarModulesAdmin as string | null | undefined
+      ),
+    [status?.SidebarModulesAdmin]
+  )
 }
 
 /**
@@ -273,16 +285,8 @@ function filterNavItems(
  *      UI to restore.
  */
 export function useSidebarConfig(navGroups: NavGroup[]): NavGroup[] {
-  const { status } = useStatus()
   const { auth } = useAuthStore()
-
-  const adminConfig = useMemo(
-    () =>
-      parseSidebarConfig(
-        status?.SidebarModulesAdmin as string | null | undefined
-      ),
-    [status?.SidebarModulesAdmin]
-  )
+  const adminConfig = useSidebarModulesAdminConfig()
 
   const userConfig = useMemo(() => {
     // If the backend marks the user as unable to configure the sidebar
@@ -316,12 +320,8 @@ export function useSidebarConfig(navGroups: NavGroup[]): NavGroup[] {
  * dropdown's wallet link) so they honour the same "wallet display" toggle.
  */
 export function useIsSidebarModuleVisible(url: string): boolean {
-  const { status } = useStatus()
   const { auth } = useAuthStore()
-
-  const adminConfig = parseSidebarConfig(
-    status?.SidebarModulesAdmin as string | null | undefined
-  )
+  const adminConfig = useSidebarModulesAdminConfig()
   const userConfig =
     auth?.user?.permissions?.sidebar_settings === false
       ? null
